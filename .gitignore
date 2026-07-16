@@ -1,0 +1,30 @@
+# ==== RAHASIA (jangan pernah di-push) ====
+telegram_token.txt
+anthropic_key.txt
+.bisnis_db_credentials
+*.key
+*.env
+
+# ==== DATA & STATE runtime (bukan kode) ====
+*_state.json
+addpo_input.txt
+bap_input.json
+bap_input_kks.json
+invoice_log.json
+last_invoice_no.txt
+last_invoice_no_kks.txt
+po_tracker.json
+po_tracker_kks.json
+PO_Tracker_*.xlsx
+
+# ==== dokumen bisnis / keluaran ====
+fixtures/
+output/
+_backup/
+_deleted_backup/
+*.pdf
+
+# ==== sampah python ====
+__pycache__/
+*.pyc
+ls
