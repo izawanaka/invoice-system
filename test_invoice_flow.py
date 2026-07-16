@@ -269,6 +269,32 @@ def scenario_g_multi_bap_satu_po():
     cur.close(); conn.close()
 
 
+def scenario_h_kks_multi_bap():
+    print("\n[Skenario H] KKS: 2 BAP dari 1 PO -> 2 baris invoice_items, no_bap masing-masing")
+    out_dir = f"{TEST_DIR}/output_h"
+    script = f"{TEST_DIR}/run_h.py"
+    make_test_script(script, "908/VII/TestSenyiur/2026", "13 Juli 2026",
+                      "TESTBAP-H1, TESTBAP-H2",
+                      "TestSenyiur", "TEST-PO-KKS-1", "Test Customer KKS",
+                      [("TEST-PO-KKS-1", 25)],
+                      [(1, "Cocopeat - PO.TEST-PO-KKS-1", 10, 500000, "TEST-PO-KKS-1", "TESTBAP-H1"),
+                       (2, "Cocopeat - PO.TEST-PO-KKS-1", 15, 500000, "TEST-PO-KKS-1", "TESTBAP-H2")],
+                      out_dir, src_file=SRC_INVOICE_KKS)
+    r = run_script(script)
+    check("H: script exit 0", r.returncode == 0, r.stderr[-300:] + r.stdout[-300:])
+    conn = db_helper.get_conn(); cur = conn.cursor()
+    cur.execute("SELECT id FROM invoices WHERE no_invoice=%s", ("908/VII/TestSenyiur/2026",))
+    inv = cur.fetchone()
+    check("H: invoice KKS tercatat", inv is not None)
+    if inv:
+        cur.execute("SELECT no_bap, qty FROM invoice_items WHERE invoice_id=%s ORDER BY urutan", (inv[0],))
+        rows = cur.fetchall()
+        check("H: 2 baris invoice_items (bukan 1 gabungan)", len(rows) == 2, str(rows))
+        check("H: no_bap tiap baris berbeda & benar",
+              {x[0] for x in rows} == {"TESTBAP-H1", "TESTBAP-H2"}, str(rows))
+    cur.close(); conn.close()
+
+
 def main():
     print("=" * 60)
     print("TEST SUITE: invoice_dkp.py transaksi atomik")
@@ -282,6 +308,7 @@ def main():
         scenario_d_po_tidak_ada()
         scenario_e_kks_non_pkp()
         scenario_f_kks_rollback()
+        scenario_h_kks_multi_bap()
     finally:
         cleanup()
 
