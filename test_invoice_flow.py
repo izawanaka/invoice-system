@@ -46,7 +46,12 @@ def make_test_script(dest, inv_no, inv_date, no_bap, site, no_po, customer, po_s
     src = replace_var(src, 'OUTPUT_DIR', f'"{output_dir}"')
     splits_str = "[" + ", ".join(f'("{p}", {q})' for p, q in po_splits) + "]"
     src = replace_var(src, 'PO_SPLITS', splits_str)
-    items_str = "[\n" + "\n".join(f'    ({i[0]}, "{i[1]}", {i[2]}, {i[3]}),' for i in items) + "\n]"
+    def _fmt_item(i):
+        parts = [str(i[0]), f'"{i[1]}"', str(i[2]), str(i[3])]
+        if len(i) > 4: parts.append(f'"{i[4]}"')
+        if len(i) > 5: parts.append(f'"{i[5]}"')
+        return "    (" + ", ".join(parts) + "),"
+    items_str = "[\n" + "\n".join(_fmt_item(i) for i in items) + "\n]"
     src = re.sub(r'^ITEMS\s*=\s*\[.*?\]', f'ITEMS = {items_str}', src, flags=re.MULTILINE | re.DOTALL)
     # PO_FILE dialihkan ke file tracker dummy supaya tidak menimpa po_tracker.json asli
     src = replace_var(src, 'PO_FILE', f'"{TEST_DIR}/po_tracker_test.json"')
@@ -95,6 +100,7 @@ def setup():
 def cleanup():
     conn = db_helper.get_conn()
     cur = conn.cursor()
+    cur.execute("DELETE FROM invoice_items WHERE invoice_id IN (SELECT id FROM invoices WHERE no_po LIKE 'TEST-PO-%%')")
     cur.execute("DELETE FROM invoices WHERE no_po LIKE 'TEST-PO-%%'")
     cur.execute("DELETE FROM bap WHERE no_bap LIKE 'TESTBAP%%'")
     cur.execute("DELETE FROM purchase_orders WHERE po_no LIKE 'TEST-PO-%%'")
@@ -232,6 +238,37 @@ def scenario_f_kks_rollback():
     cur.close(); conn.close()
 
 
+def scenario_g_multi_bap_satu_po():
+    print("\n[Skenario G] 3 BAP dari 1 PO -> 3 baris invoice_items, no_bap masing-masing")
+    out_dir = f"{TEST_DIR}/output_g"
+    script = f"{TEST_DIR}/run_g.py"
+    make_test_script(script, "907/VII/TestSite/2026", "13 Juli 2026",
+                      "TESTBAP-G1, TESTBAP-G2, TESTBAP-G3",
+                      "TestSite", "TEST-PO-DKP-2", "Test Customer",
+                      [("TEST-PO-DKP-2", 300)],
+                      [(1, "Cocopeat - PO.TEST-PO-DKP-2", 100, 1000, "TEST-PO-DKP-2", "TESTBAP-G1"),
+                       (2, "Cocopeat - PO.TEST-PO-DKP-2", 100, 1000, "TEST-PO-DKP-2", "TESTBAP-G2"),
+                       (3, "Cocopeat - PO.TEST-PO-DKP-2", 100, 1000, "TEST-PO-DKP-2", "TESTBAP-G3")],
+                      out_dir)
+    r = run_script(script)
+    check("G: script exit 0", r.returncode == 0, r.stderr[-300:] + r.stdout[-300:])
+    conn = db_helper.get_conn(); cur = conn.cursor()
+    cur.execute("SELECT id FROM invoices WHERE no_invoice=%s", ("907/VII/TestSite/2026",))
+    inv = cur.fetchone()
+    check("G: invoice tercatat", inv is not None)
+    if inv:
+        cur.execute("SELECT urutan, no_bap, qty, po_id FROM invoice_items WHERE invoice_id=%s ORDER BY urutan", (inv[0],))
+        rows = cur.fetchall()
+        check("G: 3 baris invoice_items (bukan 1 gabungan)", len(rows) == 3, str(rows))
+        baps = {row[1] for row in rows}
+        check("G: no_bap tiap baris berbeda & benar",
+              baps == {"TESTBAP-G1", "TESTBAP-G2", "TESTBAP-G3"}, str(baps))
+        cur.execute("SELECT id FROM purchase_orders WHERE po_no='TEST-PO-DKP-2' AND badan_usaha_id=4")
+        po2 = cur.fetchone()[0]
+        check("G: semua baris po_id = PO-2 (dikelompokkan per PO)", all(row[3] == po2 for row in rows), str(rows))
+    cur.close(); conn.close()
+
+
 def main():
     print("=" * 60)
     print("TEST SUITE: invoice_dkp.py transaksi atomik")
@@ -241,6 +278,7 @@ def main():
         scenario_a_sukses_normal()
         scenario_b_pdf_gagal_rollback()
         scenario_c_split_2_po()
+        scenario_g_multi_bap_satu_po()
         scenario_d_po_tidak_ada()
         scenario_e_kks_non_pkp()
         scenario_f_kks_rollback()

@@ -81,7 +81,8 @@ def main():
             "site":     site,
             "qty_kg":   total_qty,
             "no_bap":   bap_nos,
-            "inv_date": inv_date
+            "inv_date": inv_date,
+            "items":    [{"no_bap": b["no_bap"], "qty_kg": b.get("qty_kg") or b.get("qty_m3") or 0} for b in state["bap_list"]]
         }
         with open(BAP_INPUT, "w") as f:
             json.dump(bap_input, f, ensure_ascii=False)

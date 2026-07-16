@@ -49,7 +49,7 @@ CUST_ADDR   = [
 # Items: (no_item, deskripsi, qty_kg, rp_per_kg)
 # Jika 2 PO dalam 1 invoice, tambah item ke-2
 ITEMS = [
-    (1, "Cocopeat", 14438, 3150),
+    (1, "Cocopeat", 14438, 3150, "4500264733", "047/0606/2026"),
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -294,7 +294,8 @@ def generate_pdf(inv_no, inv_date, no_bap, site, no_po, customer, cust_addr, ite
             line(cx, row_y, cx, row_y + row_h, width=0.3)
 
         if i < len(items):
-            item_no, item_desc, qty, harga = items[i]
+            _it = items[i]
+            item_desc, qty, harga = _it[1], _it[2], _it[3]
             amount = qty * harga
             sub_total += amount
             text(cols["no"]     + 4.5*mm, row_y + 2.5*mm, str(i+1), align="center")
@@ -483,7 +484,10 @@ def main():
         # total_qty memuat SELURUH kiriman, jadi luberan ke PO kedua tak terlihat dan penjaga
         # menyalak tiap hari untuk data yang sebenarnya benar.
         # ITEMS dan PO_SPLITS sejajar urutannya (keduanya keluaran alokasi_po).
-        for _urut, ((_no, _desc, _qty, _harga), (_po, _)) in enumerate(zip(ITEMS, PO_SPLITS), start=1):
+        for _urut, _it in enumerate(ITEMS, start=1):
+            _no, _desc, _qty, _harga = _it[0], _it[1], _it[2], _it[3]
+            _po  = _it[4] if len(_it) > 4 else (PO_SPLITS[0][0] if PO_SPLITS else NO_PO)
+            _bap = _it[5] if len(_it) > 5 else NO_BAP
             if _qty <= 0:
                 continue
             cur.execute(
@@ -491,7 +495,7 @@ def main():
                 "satuan, harga_sat, subtotal, po_id) VALUES (%s, %s, %s, %s, %s, 'kg', %s, %s, "
                 "(SELECT id FROM purchase_orders WHERE po_no=%s AND badan_usaha_id=4)) "
                 "ON CONFLICT (invoice_id, urutan) DO NOTHING",
-                (invoice_id, _urut, NO_BAP, _desc, _qty, _harga, _qty * _harga, _po)
+                (invoice_id, _urut, _bap, _desc, _qty, _harga, _qty * _harga, _po)
             )
 
         conn.commit()
