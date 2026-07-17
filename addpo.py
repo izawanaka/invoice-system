@@ -269,7 +269,7 @@ def process(text):
         else:
             reply = "Ketik YA untuk simpan atau BATAL untuk membatalkan"
 
-    elif text == '/syncpo':
+    elif text.lower() == '/syncpo':
         try:
             lines = ["Saldo PO (dari database):\n"]
             conn = db_helper.get_conn()
