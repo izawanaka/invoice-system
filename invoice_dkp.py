@@ -23,6 +23,7 @@ _sys_path_fix.path.insert(0, _os_path_fix.environ.get(
     "INVOICE_CODE", _os_path_fix.path.dirname(_os_path_fix.path.abspath(__file__))))
 import config
 import db_helper
+import code_pajak   # ROUND_HALF_UP pajak (Vault #6)
 
 # ── KONFIGURASI ───────────────────────────────────────────────────────────────
 PO_FILE      = config.d("po_tracker.json")
@@ -309,8 +310,8 @@ def generate_pdf(inv_no, inv_date, no_bap, site, no_po, customer, cust_addr, ite
     tbl_bot = row_y
 
     # ── FOOTER TABEL ─────────────────────────────────────────────────────────
-    dpp   = sub_total * 11 / 12
-    vat   = dpp * 0.12
+    dpp   = code_pajak.dpp_nilai_lain(sub_total)
+    vat   = code_pajak.ppn(dpp)
     grand = sub_total + vat
 
     # Term of Payment (kiri)

@@ -4,6 +4,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db_helper
 import os
 import config
+import code_pajak   # ROUND_HALF_UP pajak (Vault #6)
 
 INPUT_FILE     = config.d("bap_input.json")
 PO_FILE        = config.d("po_tracker.json")
@@ -231,9 +232,9 @@ def update_excel_log(inv_no, site, no_bap, baris_po, inv_date):
                 if k in (7, 8):
                     c.number_format = "#,##0"
 
-            ws.cell(row=r, column=9).value  = '=IF(G%d="","",G%d*H%d*11/12)' % (r, r, r)
+            ws.cell(row=r, column=9).value  = '=IF(G%d="","",ROUND(G%d*H%d*11/12,0))' % (r, r, r)
             ws.cell(row=r, column=9).number_format = "#,##0"
-            ws.cell(row=r, column=10).value = '=IF(I%d="","",I%d*12%%)' % (r, r)
+            ws.cell(row=r, column=10).value = '=IF(I%d="","",ROUND(I%d*12%%,0))' % (r, r)
             ws.cell(row=r, column=10).number_format = "#,##0"
             ws.cell(row=r, column=11).value = '=IF(G%d="","",G%d*H%d+J%d)' % (r, r, r, r)
             ws.cell(row=r, column=11).number_format = "#,##0"
@@ -337,8 +338,8 @@ def main():
     with open(INV_NO_FILE,"w") as f:
         f.write(str(next_no).zfill(3))
     sub_total = sum(i[2]*i[3] for i in items)
-    dpp   = sub_total*11/12
-    vat   = dpp*0.12
+    dpp   = code_pajak.dpp_nilai_lain(sub_total)
+    vat   = code_pajak.ppn(dpp)
     grand = sub_total+vat
     safe  = inv_no.replace("/","_").replace(" ","_")
     pdf_path = os.path.join(OUTPUT_DIR, f"Inv_{safe}.pdf")
