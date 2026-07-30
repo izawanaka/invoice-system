@@ -1,0 +1,3 @@
+# Build context backend cuma butuh requirements.txt -- semua lainnya di-mount runtime.
+*
+!webapp/requirements.txt

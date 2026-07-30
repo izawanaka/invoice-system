@@ -1,0 +1,47 @@
+# Stack SANDBOX invoice web (backend FastAPI + frontend Next.js).
+# Jalankan:   docker compose -f docker-compose.sandbox.yml up -d --build
+# CATATAN: matikan dulu proses `uvicorn` nohup lama di 127.0.0.1:8100 --
+# container invoice-api menggantikannya di port host yang sama.
+services:
+  invoice-api:
+    build:
+      context: /home/izawa/invoice-sandbox
+      dockerfile: deploy/backend.Dockerfile
+    container_name: invoice-api-sandbox
+    restart: unless-stopped
+    environment:
+      INVOICE_ENV: sandbox
+      INVOICE_DATA: /data
+      INVOICE_DB: bisnis_sandbox
+      INVOICE_SMB: "0"
+      INVOICE_OUT: /data/out
+      INVOICE_OUT_KKS: /data/out-kks
+      WEBAPP_CORS_ORIGINS: "http://192.168.68.107:3100,http://localhost:3100,https://invoice.delianterra.com"
+    volumes:
+      - /home/izawa/invoice-sandbox:/app
+      - /home/izawa/invoice-sandbox-data:/data
+      # Kredensial KHUSUS container: DB_HOST=bisnis-db (nama container di network
+      # homelab, port internal 5432) -- menimpa file host yang isinya localhost:5433.
+      - /home/izawa/invoice-sandbox-data/.bisnis_db_credentials.docker:/data/.bisnis_db_credentials:ro
+    ports:
+      - "8100:8000"
+    networks:
+      - homelab
+
+  invoice-web:
+    build:
+      context: /home/izawa/invoice-system/frontend
+      args:
+        # LAN sandbox test: browser owner memanggil API langsung ke IP VM.
+        # Nanti utk produksi via Cloudflare, nilai ini diganti & image di-rebuild.
+        NEXT_PUBLIC_API_BASE: "http://192.168.68.107:8100"
+    container_name: invoice-web-sandbox
+    restart: unless-stopped
+    ports:
+      - "3100:3000"
+    networks:
+      - homelab
+
+networks:
+  homelab:
+    external: true

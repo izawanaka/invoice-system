@@ -28,3 +28,7 @@ _deleted_backup/
 __pycache__/
 *.pyc
 ls
+webapp/venv/
+webapp/.jwt_secret
+__pycache__/
+*.pyc

@@ -77,7 +77,7 @@ def get_po(site):
     return lst[0], (lst[1] if len(lst) > 1 else None)
 
 
-def alokasi_po(qty_list, po_list, qty_field, used_field, price_field, bap_nos=None):
+def alokasi_po(qty_list, po_list, qty_field, used_field, price_field):
     """Alokasikan QTY (satu BAP atau banyak BAP) ke PO aktif secara berurutan.
 
     Aturan bisnis (ditetapkan owner, 14 Juli 2026):
@@ -106,11 +106,9 @@ def alokasi_po(qty_list, po_list, qty_field, used_field, price_field, bap_nos=No
             f"Sisa per PO -> {rincian}. Daftarkan PO baru dulu (kirim foto PO atau /addpo)."
         )
 
-    if bap_nos is None:
-        bap_nos = ["" for _ in qty_list]
     items, splits, urutan = [], {}, []
     idx = 0
-    for bap_no, q in zip(bap_nos, qty_list):
+    for q in qty_list:
         q = float(q)
         while q > 1e-9:
             if idx >= len(sisa):
@@ -120,7 +118,7 @@ def alokasi_po(qty_list, po_list, qty_field, used_field, price_field, bap_nos=No
                 idx += 1
                 continue
             ambil = round(min(q, tersedia), 4)
-            items.append((len(items) + 1, f"Cocopeat - PO.{po_no}", ambil, harga, po_no, bap_no))
+            items.append((len(items) + 1, f"Cocopeat - PO.{po_no}", ambil, harga))
             if po_no not in splits:
                 urutan.append(po_no)
             splits[po_no] = round(splits.get(po_no, 0) + ambil, 4)
@@ -153,9 +151,7 @@ def patch_and_run(inv_no, inv_date, no_bap, site, no_po, customer, cust_addr, it
     src = re.sub(r'CUST_ADDR\s*=\s*\[.*?\]', f'CUST_ADDR = {cust_addr_str}', src, flags=re.MULTILINE|re.DOTALL)
     items_str = "[\n"
     for item in items:
-        _po  = item[4] if len(item) > 4 else ""
-        _bap = item[5] if len(item) > 5 else ""
-        items_str += f"    ({item[0]}, \"{item[1]}\", {item[2]}, {item[3]}, \"{_po}\", \"{_bap}\"),\n"
+        items_str += f"    ({item[0]}, \"{item[1]}\", {item[2]}, {item[3]}),\n"
     items_str += "]"
     src = re.sub(r'^ITEMS\s*=\s*\[.*?\]', f'ITEMS = {items_str}',
                  src, flags=re.MULTILINE|re.DOTALL)
@@ -359,10 +355,9 @@ def main():
 
     po_list = get_po_list(site)
     qty_list = [float(b["qty_m3"]) for b in bap_items] if bap_items else [qty_m3]
-    bap_nos  = [b.get("no_bap", "") for b in bap_items] if bap_items else [no_bap]
     try:
         items, po_splits, order_ref = alokasi_po(
-            qty_list, po_list, "total_m3", "used_m3", "rp_m3", bap_nos=bap_nos)
+            qty_list, po_list, "total_m3", "used_m3", "rp_m3")
     except ValueError as e:
         print(json.dumps({"status":"error","message":str(e)}))
         sys.exit(1)
@@ -413,7 +408,7 @@ def main():
     # tidak boleh membuat script keluar dengan kode gagal, karena n8n akan melaporkan
     # invoice yang BERHASIL sebagai GAGAL dan owner mengira tidak terjadi apa-apa.
     try:
-        baris_po = [(it[4], it[2], it[3]) for it in items]
+        baris_po = [(po_splits[k][0], items[k][2], items[k][3]) for k in range(len(items))]
         update_excel_log(inv_no, site, no_bap, baris_po, inv_date)
     except Exception as e:
         print("  PERINGATAN: invoice SUDAH terbit, tapi baris Excel gagal ditulis: %s" % e)

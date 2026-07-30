@@ -115,13 +115,7 @@ def pesan_bap(ocr):
 
 def simpan_state_bap(ocr):
     """Salinan sengaja dari ocr_bap.save_to_state() versi-1 (yang menangani qty_m3).
-    Lihat catatan di docstring modul kenapa TIDAK di-import.
-
-    Mengembalikan ("ok", site) kalau tersimpan/tergabung normal, atau
-    ("site_mismatch", site_sesi_aktif) kalau BAP ini beda site dari sesi yang
-    sedang aktif -- TIDAK digabung, supaya BAP site A tidak pernah ikut
-    tertagih ke invoice site B (bug nyata: BAP Jembayan nyangkut ke sesi
-    Senyiur yang lupa di-SELESAI/BATAL)."""
+    Lihat catatan di docstring modul kenapa TIDAK di-import."""
     try:
         with open(BAP_STATE_FILE) as f:
             state = json.load(f)
@@ -132,13 +126,10 @@ def simpan_state_bap(ocr):
         "qty_kg": float(ocr.get("qty_kg", 0) or 0),
         "qty_m3": float(ocr.get("qty_m3", 0) or 0),
     }
-    site_baru = ocr.get("site", "")
-    if state.get("active") and state.get("site") and site_baru and state["site"] != site_baru:
-        return "site_mismatch", state["site"]
     if not state.get("active"):
         state = {
             "active": True,
-            "site": site_baru,
+            "site": ocr.get("site", ""),
             "inv_date": ocr.get("tanggal", ""),
             "bap_list": [entri],
         }
@@ -146,7 +137,6 @@ def simpan_state_bap(ocr):
         state["bap_list"].append(entri)
     with open(BAP_STATE_FILE, "w") as f:
         json.dump(state, f, indent=2, ensure_ascii=False)
-    return "ok", site_baru
 
 
 # ---------------------------------------------------------------- I/O
@@ -180,12 +170,20 @@ def bagian_dari_berkas(nama, data):
     return bagian
 
 
+# Berkas mentah terakhir yang diunduh -- dipakai bap_arsip untuk mengarsipkan BAP
+# yang masuk lewat Telegram (keputusan owner 28 Jul 2026: BAP bisa dari 2 pintu,
+# Telegram maupun web, dan keduanya WAJIB tercatat di app_bap_nota).
+_BERKAS_TERAKHIR = {"nama": None, "data": None}
+
+
 def ambil_gambar(file_id):
     r = urllib.request.urlopen(
         f"https://api.telegram.org/bot{TG_TOKEN}/getFile?file_id={file_id}")
     file_path = json.loads(r.read())["result"]["file_path"]
     data = urllib.request.urlopen(
         f"https://api.telegram.org/file/bot{TG_TOKEN}/{file_path}").read()
+    _BERKAS_TERAKHIR["nama"] = os.path.basename(file_path)
+    _BERKAS_TERAKHIR["data"] = data
     return bagian_dari_berkas(file_path, data)
 
 
@@ -202,7 +200,7 @@ PROMPT = (
     "\"qty_m3\":angka_total_m3_untuk_BAP_atau_0,"
     "\"jumlah_sak\":angka_sak_untuk_BAP_atau_0,"
     "\"po_no\":\"nomor PO (kosongkan kalau BAP)\","
-    "\"customer\":\"nama perusahaan pembeli (PO) atau penerima barang sesuai kop surat (BAP) -- ISI untuk PO MAUPUN BAP\","
+    "\"customer\":\"nama perusahaan pembeli/penerbit PO (kosongkan kalau BAP)\","
     "\"total_qty\":angka_total_kuantitas_PO_atau_0,"
     "\"harga\":angka_harga_per_satuan_PO_tanpa_titik_koma_atau_0,"
     "\"confidence\":\"high atau medium atau low\"}\n\n"
@@ -215,11 +213,6 @@ PROMPT = (
     "petunjuk apa pun. Perhatikan SSP dan SBS mirip: baca huruf per huruf. "
     "Kalau kode plant tidak dikenali, KOSONGKAN site dan set confidence low -- lebih baik "
     "bertanya daripada menebak salah.\n"
-    "- BEBERAPA perusahaan (mis. PT Itci/Ichi Hutani Manunggal) punya LEBIH DARI SATU "
-    "site, dan BANYAK BAP mereka SAMA SEKALI TIDAK mencantumkan nama site di "
-    "dokumennya. Kalau begitu JANGAN menebak site dari mana pun (termasuk dari nama "
-    "customer) -- KOSONGKAN 'site' dan set confidence low. Sistem akan "
-    "menentukan/menanyakan site dari nama perusahaan di 'customer'.\n"
     "- BAP Senyiur memakai kolom Total (m3). BAP site lain memakai Berat Bersih (KG).\n"
     "- PENTING: BAP sering memuat DUA angka berat. Contoh: 'Jumlah Berdasarkan "
     "pengiriman = 19.104 Kg' dan 'Berat Bersih sesuai standar yang di terima = "
@@ -231,12 +224,9 @@ PROMPT = (
     "- 'site' adalah lokasi/tujuan pengiriman, bukan alamat kantor customer.\n"
     "- PENTING soal 'customer': kita adalah PENJUAL. Badan usaha KITA adalah "
     "PT Deliandra Karya Pratama (DKP) dan CV Kreasi Karya Sukses (KKS) -- keduanya "
-    "JANGAN PERNAH diisi sebagai customer, baik di PO MAUPUN BAP. Customer = pihak "
-    "PEMBELI/PENERIMA barang (contoh: PT Ichi Hutani Manunggal / PT Itci Hutani "
-    "Manunggal). Untuk BAP, ambil dari nama perusahaan di kop surat/kepala dokumen, "
-    "BUKAN dari kolom tanda tangan 'Diterima Oleh' (itu nama staf, bukan nama PT). "
-    "Kalau nama pembeli/penerima tidak jelas, kosongkan customer dan set confidence "
-    "low -- JANGAN menebak dengan nama kami.\n"
+    "JANGAN PERNAH diisi sebagai customer. Customer = pihak PEMBELI yang MENERBITKAN "
+    "PO ini kepada kami (contoh: PT Ichi Hutani Manunggal). Kalau nama pembeli tidak "
+    "jelas, kosongkan customer dan set confidence low -- JANGAN menebak dengan nama kami.\n"
     "- Angka JANGAN pakai pemisah ribuan. Kalau ragu, isi 0 dan set confidence low.\n"
     "- Kalau dokumen jelas bukan BAP maupun PO, isi jenis = LAIN."
 )
@@ -251,32 +241,6 @@ def terapkan_pt_site(ocr):
     elif status == "ask":
         ocr["site"] = ""
     return status
-
-
-def tentukan_site_bap(ocr, caption):
-    """Tentukan site BAP dengan urutan prioritas (lihat juga terapkan_pt_site()
-    untuk jalur PO):
-      1) caption eksplisit (paksa_site) -- kepastian dari user selalu menang.
-      2) PT dikenal & cuma 1 site terdaftar -> autofill.
-      3) PT dikenal & >1 site terdaftar -> JANGAN PERNAH menebak (banyak BAP PT
-         begini, mis. PT Itci/Ichi Hutani Manunggal, sama sekali tidak
-         mencantumkan nama site di dokumennya) -- site dikosongkan, minta
-         konfirmasi eksplisit ke user.
-      4) PT tidak dikenal di pt_site.py -> pakai tebakan AI dari foto apa adanya.
-    ocr["site"] diubah sesuai keputusan. Return (status, daftar_site_pt) dengan
-    status: 'paksa' | 'autofill' | 'ask' | 'tebakan_ai'."""
-    site_paksa = paksa_site(caption)
-    if site_paksa:
-        ocr["site"] = site_paksa
-        return "paksa", []
-    sites_pt = pt_site.sites_for(ocr.get("customer", ""))
-    if len(sites_pt) == 1:
-        ocr["site"] = sites_pt[0]
-        return "autofill", sites_pt
-    if len(sites_pt) > 1:
-        ocr["site"] = ""
-        return "ask", sites_pt
-    return "tebakan_ai", []
 
 
 def baca_dokumen(bagian):
@@ -326,27 +290,26 @@ def main():
                               "ditebak otomatis. Mohon pilih/ketik site di bawah." + chr(10) + chr(10) + hasil["reply"])
         ocr["reply"] = "Terbaca sebagai PURCHASE ORDER.\n\n" + hasil["reply"]
     elif jenis == "BAP":
-        status_site, sites_pt = tentukan_site_bap(ocr, caption)
-        if status_site == "ask":
-            opsi = " atau ".join(f"'BAP {s}'" for s in sites_pt)
-            ocr["reply"] = (
-                f"BAP dari {ocr.get('customer') or 'perusahaan ini'} -- ada "
-                f"{len(sites_pt)} site terdaftar ({', '.join(sites_pt)}), dan dokumen "
-                f"ini tidak mencantumkan nama site.\n\n"
-                f"Mohon kirim ulang BAP ini dengan caption {opsi} supaya site-nya "
-                f"pasti. Tidak ada yang disimpan."
-            )
-        else:
-            status_simpan, site_sesi = simpan_state_bap(ocr)
-            if status_simpan == "site_mismatch":
-                ocr["reply"] = (
-                    f"ADA SESI BAP AKTIF untuk site {site_sesi}, tapi dokumen ini "
-                    f"terbaca site {ocr.get('site') or 'tidak terbaca'}.\n\n"
-                    f"TIDAK digabung supaya tidak salah site. Ketik SELESAI atau BATAL "
-                    f"dulu untuk sesi {site_sesi}, baru kirim ulang BAP ini."
-                )
-            else:
-                ocr["reply"] = pesan_bap(ocr)
+        site_paksa = paksa_site(caption)   # caption mengalahkan tebakan AI
+        if site_paksa:
+            ocr["site"] = site_paksa
+        simpan_state_bap(ocr)
+        # Catat BAP ke app_bap_nota supaya Aturan Bisnis #9 (invoice hanya terbit
+        # setelah BAP ada) juga berlaku untuk BAP yang masuk lewat Telegram.
+        # Sengaja gagal-aman: kegagalan di sini TIDAK boleh mengganggu balasan bot.
+        try:
+            _dir_webapp = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), "webapp")
+            if _dir_webapp not in sys.path:
+                sys.path.insert(0, _dir_webapp)
+            import bap_arsip
+            if _BERKAS_TERAKHIR["data"]:
+                bap_arsip.daftarkan_dari_telegram(
+                    _BERKAS_TERAKHIR["nama"] or "telegram.jpg",
+                    _BERKAS_TERAKHIR["data"], ocr)
+        except Exception as _e:
+            print(f"  [ocr_doc] PERINGATAN: arsip BAP dilewati: {_e}", file=sys.stderr)
+        ocr["reply"] = pesan_bap(ocr)
     else:
         ocr["reply"] = ("Dokumen tidak dikenali sebagai BAP maupun PO.\n\n"
                         "Tidak ada yang disimpan. Kirim ulang dengan caption "
@@ -373,21 +336,6 @@ def selftest():
     cek("M: 'laporan mps' -> MPS", paksa_site("laporan mps") == "MPS")
     cek("M: tanpa site -> None", paksa_site("BAP juni") is None)
     cek("M: kosong -> None", paksa_site("") is None)
-
-    print("\n[Skenario N] Site BAP: caption > PT dikenal > tebakan AI (tidak pernah menebak PT multi-site)")
-    n1 = {"customer": "PT Itci Hutani Manunggal", "site": "Suring"}
-    stN1, spN1 = tentukan_site_bap(n1, "BAP juni")
-    cek("N: PT multi-site tanpa caption -> ask, site dikosongkan",
-        stN1 == "ask" and n1["site"] == "" and set(spN1) == {"Jembayan", "Suring"}, str(n1) + "/" + stN1)
-    n2 = {"customer": "PT Itci Hutani Manunggal", "site": "Suring"}
-    stN2, spN2 = tentukan_site_bap(n2, "BAP Jembayan")
-    cek("N: caption menang meski PT multi-site", stN2 == "paksa" and n2["site"] == "Jembayan", str(n2))
-    n3 = {"customer": "PT Mahakam Persada Sakti", "site": "Senyiur"}
-    stN3, spN3 = tentukan_site_bap(n3, "BAP juni")
-    cek("N: PT single-site -> autofill", stN3 == "autofill" and n3["site"] == "MPS", str(n3))
-    n4 = {"customer": "PT Tidak Dikenal", "site": "Senyiur"}
-    stN4, spN4 = tentukan_site_bap(n4, "BAP juni")
-    cek("N: PT tak dikenal -> pakai tebakan AI apa adanya", stN4 == "tebakan_ai" and n4["site"] == "Senyiur", str(n4))
 
     print("\n[Skenario H] OCR PO -> teks berlabel yang dimengerti addpo.parse_labeled()")
     ocr = {"po_no": "4500270001", "site": "Jembayan",
