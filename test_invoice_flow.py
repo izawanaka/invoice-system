@@ -200,7 +200,7 @@ def scenario_e_kks_non_pkp():
     check("E: invoice KKS tercatat", inv is not None)
     if inv:
         dpp, ppn, sub, grand, satuan = inv
-        check("E: DPP = 0 (non-PKP)", float(dpp) == 0, str(dpp))
+        check("E: DPP = sub_total (non-PKP, konvensi 5 Agu 2026)", float(dpp) == float(sub), f"dpp={dpp} sub={sub}")
         check("E: PPN = 0 (non-PKP)", float(ppn) == 0, str(ppn))
         check("E: grand_total == sub_total (no PPN)", float(grand) == float(sub), f"grand={grand} sub={sub}")
         check("E: satuan = m3", satuan == "m3", str(satuan))

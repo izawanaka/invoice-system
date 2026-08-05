@@ -351,7 +351,7 @@ def main():
     # Kunci baris PO -> generate PDF -> commit semua bareng.
     # Kalau PDF gagal, SEMUA perubahan DB di-rollback: saldo PO tidak berkurang,
     # tidak ada invoice/bap nyangkut setengah jalan.
-    # KKS = Non-PKP: dpp & ppn selalu 0, grand_total = sub_total.
+    # KKS = Non-PKP: ppn selalu 0, dpp = sub_total (konvensi seragam 5 Agu 2026), grand_total = sub_total.
     total_qty = sum(item[2] for item in ITEMS)
     conn = db_helper.get_conn()
     try:
@@ -426,10 +426,10 @@ def main():
             "site, customer, total_qty, satuan, sub_total, dpp, ppn, grand_total, pdf_path, status) "
             "VALUES (5, %s, %s, CURRENT_DATE, %s, "
             "(SELECT id FROM purchase_orders WHERE po_no=%s AND badan_usaha_id=5 LIMIT 1), "
-            "%s, %s, %s, %s, 'm3', %s, 0, 0, %s, %s, 'generated') "
+            "%s, %s, %s, %s, 'm3', %s, %s, 0, %s, %s, 'generated') "
             "ON CONFLICT (no_invoice) DO NOTHING RETURNING id",
             (INV_NO, inv_seq, _parse_tgl(INV_DATE), po_utama, NO_PO, SITE, CUSTOMER,
-             total_qty, sub_total, grand, filepath)
+             total_qty, sub_total, sub_total, grand, filepath)
         )
         _r = cur.fetchone()
         if _r:
