@@ -298,10 +298,17 @@ def generate_pdf(inv_no, inv_date, no_bap, site, no_po, customer, cust_addr, ite
     amount_x      = col_end - 12*mm
     y_tot = tbl_bot - 6*mm
 
-    text(total_label_x, y_tot, "Sub Total", size=9)
-    text(colon_x,       y_tot, ":", size=9, align="right")
-    text(amount_x,      y_tot, format_rp(sub_total), size=9, align="right")
-    y_tot -= 5*mm
+    # Blok total disamakan dgn DKP (keputusan Izawa 5 Agu 2026):
+    # baris PPN tetap dicetak utk KKS non-PKP, nilainya selalu Rp 0.
+    totals_kks = [
+        ('Sub Total', sub_total),
+        ('PPN',       0),
+    ]
+    for _lbl, _val in totals_kks:
+        text(total_label_x, y_tot, _lbl, size=9)
+        text(colon_x,       y_tot, ':', size=9, align='right')
+        text(amount_x,      y_tot, format_rp(_val), size=9, align='right')
+        y_tot -= 5*mm
 
     c.setLineWidth(0.5)
     c.line(total_label_x, y_tot + 3*mm, amount_x, y_tot + 3*mm)
