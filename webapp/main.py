@@ -17,7 +17,7 @@ import settings  # HARUS diimpor PALING AWAL -- ini yang menambahkan folder kode
                  # invoice (config.py, db_helper.py, dst) ke sys.path. Modul lain
                  # di bawah ini (termasuk semua routers/*) bergantung pada urutan ini.
 import db_helper
-from routers import auth, badan_usaha, bap, invoices, mitra, paperless, po, users
+from routers import auth, badan_usaha, bap, dokumen, faktur_pajak, invoices, mitra, paperless, pembayaran, po, resi, users
 
 app = FastAPI(
     title="Invoice Web Dashboard API",
@@ -41,6 +41,10 @@ app.include_router(invoices.router)
 app.include_router(paperless.router)
 app.include_router(users.router)
 app.include_router(mitra.router)
+app.include_router(faktur_pajak.router)
+app.include_router(resi.router)
+app.include_router(dokumen.router)
+app.include_router(pembayaran.router)
 
 
 @app.get("/health")

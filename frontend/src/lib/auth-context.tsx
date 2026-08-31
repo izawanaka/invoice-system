@@ -28,10 +28,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
     apiMe()
       .then((u) => setUser(u))
-      .catch(() => {
-        // Token invalid/expired: bersihkan supaya tidak looping error.
-        clearToken();
-        setUser(null);
+      .catch((err) => {
+        // Hanya hapus token kalau server BENAR-BENAR menolak (401 = sesi habis).
+        // Untuk error sementara (API sedang restart / jaringan / 5xx) JANGAN hapus
+        // token -- kalau tidak, gangguan sesaat memaksa login ulang padahal token
+        // masih sah. Reload setelah API pulih akan memulihkan sesi otomatis.
+        if (isUnauthorized(err)) {
+          clearToken();
+          setUser(null);
+          if (typeof window !== "undefined") window.sessionStorage.removeItem("invoice_app_bu_chosen");
+        }
       })
       .finally(() => setLoading(false));
   }, []);
@@ -45,6 +51,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const logout = React.useCallback(() => {
     clearToken();
     setUser(null);
+    if (typeof window !== "undefined") window.sessionStorage.removeItem("invoice_app_bu_chosen");
     router.push("/login");
   }, [router]);
 

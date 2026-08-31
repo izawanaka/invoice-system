@@ -120,6 +120,32 @@ class POCreateRequest(BaseModel):
     warning_threshold_pct: Optional[float] = None
 
 
+class POOcrItemOut(BaseModel):
+    nama_item: Optional[str] = None
+    kuantitas: Optional[float] = None
+    harga_satuan: Optional[float] = None
+    subtotal: Optional[float] = None
+
+
+class POOcrOut(BaseModel):
+    """Hasil ekstraksi OCR PO (POST /po/ocr) -- PRATINJAU SAJA, belum tersimpan
+    ke DB. Field yang tidak yakin dibaca model dikembalikan null (lihat
+    webapp/po_ocr.py) supaya UI memaksa user mengisi/mengonfirmasi manual
+    (aturan owner: "selalu tanya ke user sebelum lanjut")."""
+    po_no: Optional[str] = None
+    customer: Optional[str] = None
+    tanggal: Optional[str] = None
+    items: List[POOcrItemOut] = []
+    total_qty: Optional[float] = None
+    satuan: Optional[str] = None
+    harga_satuan: Optional[float] = None
+    total_nilai: Optional[float] = None
+    site_saran: Optional[str] = None
+    site_status: str = "ask"
+    catatan_keraguan: Optional[str] = None
+    po_no_sudah_ada: Optional[bool] = None
+
+
 class POOut(BaseModel):
     id: int
     badan_usaha_kode: str
@@ -189,6 +215,7 @@ class BAPNotaOut(BaseModel):
     mitra_pt_id: Optional[int] = None
     mitra_pt_nama: Optional[str] = None
     deteksi_status: Optional[str] = None
+    dipakai_invoice: Optional[str] = None
 
 
 # ---------- Invoice ----------
@@ -214,10 +241,15 @@ class InvoiceOut(BaseModel):
     status: Optional[str] = None
     tgl_bayar: Optional[date] = None
     hari_outstanding: Optional[int] = None
+    # total cicilan terbayar (SUM app_invoice_bayar) -- pelunasan, owner-only; None utk staf
+    total_dibayar: Optional[float] = None
     no_faktur_pajak: Optional[str] = None
     paperless_doc_id: Optional[str] = None
     # tahap dokumen fisik: terbit/ke_konsultan/faktur_ada/terkirim -- BUKAN pelunasan
     tahap_dok: Optional[str] = None
+    # invoice batal (Vault baru) -- NULL = aktif, terisi = dibatalkan (qty PO &
+    # BAP terkait sudah dikembalikan otomatis, lihat routers/invoices.py batalkan_invoice)
+    dibatalkan_at: Optional[datetime] = None
 
 
 class InvoicePaymentUpdateRequest(BaseModel):
@@ -235,6 +267,9 @@ class BAPItemIn(BaseModel):
     qty: float = Field(gt=0)
 
 
+MAKS_BAP_PER_INVOICE = 4
+
+
 class InvoiceGenerateRequest(BaseModel):
     """Body mengikuti KONTRAK INPUT yang sudah ada di bap_to_invoice.py /
     bap_to_invoice_kks.py -- endpoint ini TIDAK menghitung ulang PDF/pajak
@@ -244,26 +279,48 @@ class InvoiceGenerateRequest(BaseModel):
     site: str
     no_bap: str
     inv_date: str = Field(description='Format "DD Bulan YYYY" atau "YYYY-MM-DD"')
-    items: List[BAPItemIn] = Field(min_length=1)
-    # Hanya dipakai DKP -- KKS mengambil customer dari PO tracker itu sendiri
-    # (lihat bap_to_invoice_kks.py: po1.get("customer")).
-    customer: Optional[str] = None
-    cust_addr: Optional[List[str]] = None
+    items: List[BAPItemIn] = Field(min_length=1, max_length=MAKS_BAP_PER_INVOICE)
+    # customer/cust_addr TIDAK lagi diterima dari web utk DKP MAUPUN KKS (31 Jul
+    # 2026 -- owner: "desain DKP dan KKS itu 1 dan baku, yang berbeda hanya isinya
+    # saja, itupun admin dan owner yang isi"). Kedua skrip (bap_to_invoice.py /
+    # _kks.py) sekarang SAMA-SAMA ambil customer dari PO tracker (po1.get("customer")),
+    # diisi admin/owner sekali saat PO didaftarkan (Tambah PO / OCR PO), bukan
+    # diketik ulang tiap generate invoice. Field dihapus dari kontrak request.
+    # BAP boleh TANPA nomor (nomor BAP tidak dicetak di invoice). Identifikasi &
+    # anti-dobel-tagih utk BAP tanpa nomor lewat id baris unggahan app_bap_nota.
+    nota_ids: Optional[List[int]] = None
 
-    @model_validator(mode="after")
-    def _wajib_customer_utk_dkp(self):
-        # bap_to_invoice.py diam-diam JATUH KE DEFAULT ("PT.Itci Hutani Manunggal")
-        # kalau customer tidak dikirim -- itu benar utk skrip lama yang dipakai
-        # manual, tapi FATAL kalau lolos begitu saja dari web utk site/PO customer
-        # lain (invoice PDF resmi bisa salah cetak nama/alamat customer). Jadi
-        # DIWAJIBKAN eksplisit di sini utk DKP, supaya gagal cepat, bukan gagal
-        # diam-diam di PDF yang sudah terbit.
-        if self.badan_usaha_kode.upper() == "DKP" and not (self.customer and self.customer.strip()):
-            raise ValueError(
-                "customer wajib diisi utk DKP (skrip akan diam-diam memakai default "
-                "'PT.Itci Hutani Manunggal' kalau tidak diisi -- berbahaya utk site/PO lain)"
-            )
-        return self
+
+class InvoicePreviewLine(BaseModel):
+    urutan: int
+    deskripsi: str
+    qty: float
+    harga: float
+    jumlah: float
+
+
+class InvoicePreviewPOSplit(BaseModel):
+    po_no: str
+    qty_dipotong: float
+    sisa_sebelum: float
+    sisa_sesudah: float
+
+
+class InvoicePreviewResult(BaseModel):
+    """Pratinjau HANYA-BACA (tidak menulis apa pun) sebelum owner/admin klik
+    Terbitkan -- lihat routers/invoices.py:preview_invoice utk penjelasan
+    kenapa ini bisa berbeda tipis dari hasil generate yang sebenarnya kalau
+    ada invoice lain generate di antara preview dan klik Terbitkan."""
+    inv_no_preview: str
+    site: str
+    no_po: str
+    items: List[InvoicePreviewLine]
+    po_splits: List[InvoicePreviewPOSplit]
+    sub_total: float
+    dpp: float
+    ppn: float
+    grand_total: float
+    catatan: str
 
 
 class InvoiceGenerateResult(BaseModel):
@@ -288,3 +345,52 @@ class PaperlessUploadResult(BaseModel):
 
 
 LoginResponse.model_rebuild()
+
+
+# ---------- Faktur Pajak (Fase 3, 30 Jul 2026) ----------
+class FakturPajakCandidateInvoice(BaseModel):
+    """Kandidat Invoice utk dipilih user di dropdown -- TIDAK PERNAH auto-link,
+    pilihan invoice_id selalu aksi eksplisit user (lihat routers/faktur_pajak.py)."""
+    invoice_id: int
+    no_invoice: str
+    customer: Optional[str] = None
+    grand_total: Optional[float] = None
+    tgl_invoice: Optional[date] = None
+    dpp: Optional[float] = None
+    ppn: Optional[float] = None
+
+
+class FakturPajakOcrOut(BaseModel):
+    """Hasil ekstraksi OCR Faktur Pajak (POST /faktur-pajak/ocr) -- PRATINJAU
+    SAJA, belum tersimpan ke DB. Field yang tidak yakin dibaca model
+    dikembalikan null (lihat webapp/faktur_ocr.py) supaya UI memaksa user
+    mengisi/mengonfirmasi manual (aturan owner: "selalu tanya ke user sebelum
+    lanjut")."""
+    nomor_faktur: Optional[str] = None
+    tanggal_faktur: Optional[str] = None
+    nama_pembeli: Optional[str] = None
+    referensi_invoice: Optional[str] = None
+    dpp: Optional[float] = None
+    ppn: Optional[float] = None
+    total: Optional[float] = None
+    catatan_keraguan: Optional[str] = None
+    kandidat_invoice: List[FakturPajakCandidateInvoice] = []
+
+
+class FakturPajakOut(BaseModel):
+    id: int
+    badan_usaha_kode: str
+    invoice_id: int
+    no_invoice: str
+    nomor_faktur: Optional[str] = None
+    tanggal_faktur: Optional[str] = None
+    dpp: Optional[float] = None
+    ppn: Optional[float] = None
+    total: Optional[float] = None
+    original_filename: Optional[str] = None
+    catatan_keraguan: Optional[str] = None
+    # 'matched' | 'mismatch' | 'pending' -- lihat routers/faktur_pajak.py utk
+    # logika cross-check (validation.py pattern, toleransi Rp 25).
+    status_cocok: str = "pending"
+    catatan_selisih: Optional[str] = None
+    created_at: Optional[datetime] = None

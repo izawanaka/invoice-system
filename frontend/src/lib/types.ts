@@ -89,6 +89,29 @@ export interface POCreateRequest {
   warning_threshold_pct?: number | null;
 }
 
+export interface POOcrItemOut {
+  nama_item?: string | null;
+  kuantitas?: number | null;
+  harga_satuan?: number | null;
+  subtotal?: number | null;
+}
+
+export interface POOcrOut {
+  po_no?: string | null;
+  customer?: string | null;
+  tanggal?: string | null;
+  items: POOcrItemOut[];
+  total_qty?: number | null;
+  satuan?: string | null;
+  harga_satuan?: number | null;
+  total_nilai?: number | null;
+  site_saran?: string | null;
+  site_status: string;
+  catatan_keraguan?: string | null;
+  po_no_sudah_ada?: boolean | null;
+}
+
+
 export interface BAPOut {
   id: number;
   badan_usaha_kode: string;
@@ -121,9 +144,12 @@ export interface InvoiceOut {
   status: string | null; // "generated" | "paid"
   tgl_bayar: string | null;
   hari_outstanding: number | null;
+  // owner-only: total cicilan yang sudah dibayar (utk centang & jumlah di Rekap Invoice)
+  total_dibayar?: number | null;
   no_faktur_pajak: string | null;
   paperless_doc_id: string | null;
   tahap_dok?: string | null; // terbit/ke_konsultan/faktur_ada/terkirim (operasional, bukan pelunasan)
+  dibatalkan_at?: string | null; // terisi = invoice sudah dibatalkan (qty PO & BAP sudah dikembalikan)
 }
 
 export interface BAPItemIn {
@@ -139,6 +165,8 @@ export interface InvoiceGenerateRequest {
   items: BAPItemIn[];
   customer?: string | null;
   cust_addr?: string[] | null;
+  // BAP tanpa nomor: id baris unggahan app_bap_nota (identifikasi + anti-dobel-tagih).
+  nota_ids?: number[];
 }
 
 export interface InvoiceGenerateResult {
@@ -151,6 +179,35 @@ export interface InvoiceGenerateResult {
   grand_total?: number | null;
   pdf_path?: string | null;
   raw_stdout?: string | null;
+}
+
+// Pratinjau HANYA-BACA sebelum klik Terbitkan -- wizard "Terbit Invoice" (menu /bap).
+export interface InvoicePreviewLine {
+  urutan: number;
+  deskripsi: string;
+  qty: number;
+  harga: number;
+  jumlah: number;
+}
+
+export interface InvoicePreviewPOSplit {
+  po_no: string;
+  qty_dipotong: number;
+  sisa_sebelum: number;
+  sisa_sesudah: number;
+}
+
+export interface InvoicePreviewResult {
+  inv_no_preview: string;
+  site: string;
+  no_po: string;
+  items: InvoicePreviewLine[];
+  po_splits: InvoicePreviewPOSplit[];
+  sub_total: number;
+  dpp: number;
+  ppn: number;
+  grand_total: number;
+  catatan: string;
 }
 
 export interface PaperlessUploadResult {
@@ -188,6 +245,7 @@ export interface BAPNotaOut {
   mitra_pt_id?: number | null;
   mitra_pt_nama?: string | null;
   deteksi_status?: string | null; // "auto" | "perlu_konfirmasi" | "manual"
+  dipakai_invoice?: string | null; // no. invoice kalau BAP ini sudah dipakai, null kalau belum
 }
 
 export interface PODocOut {
@@ -233,12 +291,13 @@ export interface MitraPTLite {
   group_id: number;
   nama: string;
   aktif: boolean;
-  site: string | null;
   jml_po_aktif: number;
 }
 export interface MitraGroup {
   id: number;
   nama: string;
+  alamat: string | null;
+  npwp: string | null;
   pt: MitraPTLite[];
 }
 export interface MitraPOInvoice {
@@ -265,6 +324,126 @@ export interface MitraPOLinked {
   invoices: MitraPOInvoice[];
 }
 export interface MitraPTDetail {
-  pt: { id: number; nama: string; aktif: boolean; group_id: number; group_nama: string | null; site: string | null };
+  pt: { id: number; nama: string; aktif: boolean; group_id: number; group_nama: string | null };
   po_terhubung: MitraPOLinked[];
+}
+
+
+// ---------- Faktur Pajak (Fase 3, 30 Jul 2026) ----------
+export interface FakturPajakCandidateInvoice {
+  invoice_id: number;
+  no_invoice: string;
+  customer?: string | null;
+  grand_total?: number | null;
+  tgl_invoice?: string | null;
+  dpp?: number | null;
+  ppn?: number | null;
+}
+
+export interface FakturPajakOcrOut {
+  nomor_faktur?: string | null;
+  tanggal_faktur?: string | null;
+  nama_pembeli?: string | null;
+  referensi_invoice?: string | null;
+  dpp?: number | null;
+  ppn?: number | null;
+  total?: number | null;
+  catatan_keraguan?: string | null;
+  kandidat_invoice: FakturPajakCandidateInvoice[];
+}
+
+export interface FakturPajakOut {
+  id: number;
+  badan_usaha_kode: string;
+  invoice_id: number;
+  no_invoice: string;
+  nomor_faktur?: string | null;
+  tanggal_faktur?: string | null;
+  dpp?: number | null;
+  ppn?: number | null;
+  total?: number | null;
+  original_filename?: string | null;
+  catatan_keraguan?: string | null;
+  status_cocok: "matched" | "mismatch" | "pending";
+  catatan_selisih?: string | null;
+  created_at?: string | null;
+}
+
+
+// ---------- Resi Pengiriman (entitas bersama app_resi, 31 Jul 2026) ----------
+export interface ResiInvoiceLite {
+  no_invoice: string;
+  tgl_invoice: string | null;
+  site: string | null;
+  customer: string | null;
+  grand_total: number | null;
+  badan_usaha_kode: string | null;
+}
+export interface ResiListItem {
+  id: number;
+  no_resi: string | null;
+  kurir: string | null;
+  tgl_kirim: string | null;
+  created_at: string | null;
+  badan_usaha_kode: string | null;
+  jml_invoice: number;
+  daftar_invoice: string;
+}
+export interface ResiDetail {
+  id: number;
+  no_resi: string | null;
+  kurir: string | null;
+  tgl_kirim: string | null;
+  created_at: string | null;
+  badan_usaha_kode: string | null;
+  ada_berkas: boolean;
+  paperless_doc_id: string | null;
+  invoices: ResiInvoiceLite[];
+}
+
+
+// ---------- Cek Dokumen (Paperless) ----------
+export interface DokumenItem {
+  jenis: string;
+  judul: string;
+  doc_id: number;
+}
+export interface PembayaranItem {
+  id: number;
+  nominal: number;
+  tgl_bayar: string | null;
+  catatan: string | null;
+  created_at: string | null;
+}
+export interface PembayaranRingkas {
+  no_invoice: string;
+  grand_total: number;
+  total_dibayar: number;
+  sisa: number;
+  status: string;
+  daftar: PembayaranItem[];
+}
+export interface CekDokumenResult {
+  no_invoice: string;
+  paperless_aktif: boolean;
+  dokumen: DokumenItem[];
+}
+
+// ---------- Kontrak (dokumen payung per Group, 3 Agu 2026) ----------
+export interface KontrakOut {
+  id: number;
+  group_id: number;
+  badan_usaha_kode: string | null;
+  nomor_kontrak: string | null;
+  judul: string | null;
+  tanggal: string | null;
+  masa_berlaku: string | null;
+  nilai: number | null;
+  catatan: string | null;
+  original_filename: string | null;
+  punya_file: boolean;
+  paperless_doc_id: string | null;
+  ringkasan: string | null;
+  ringkasan_at: string | null;
+  created_at: string | null;
 }

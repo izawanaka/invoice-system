@@ -2,16 +2,19 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import {
   LayoutDashboard,
   FileText,
   ClipboardList,
   Receipt,
+  FileCheck2,
   LogOut,
+  ArrowLeftRight,
   Settings,
   User,
   Users,
+  Send,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -31,45 +34,62 @@ type NavLink = { href: string; label: string; icon: React.ComponentType<{ classN
 type NavGroup = { section: string; items: NavLink[] };
 type NavEntry = NavLink | NavGroup;
 
-// Susunan menu (permintaan owner 30 Jul 2026):
-// - Mitra paling atas (dipakai utk tracking PO aktif + invoice di dalamnya).
-// - "BAP" diganti nama jadi "Terbit Invoice".
-// - "Invoice" diganti nama jadi "Rekap Invoice".
-// - "Rekap Invoice" + "Purchase Order" dikelompokkan dalam bagian "Laporan".
-const NAV_ITEMS: NavEntry[] = [
-  { href: "/mitra", label: "Mitra", icon: Users },
-  { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/bap", label: "Terbit Invoice", icon: FileText },
-  {
-    section: "Laporan",
-    items: [
-      { href: "/invoices", label: "Rekap Invoice", icon: Receipt },
-      { href: "/po", label: "Purchase Order", icon: ClipboardList },
-    ],
-  },
-  // Terlihat utk semua peran: staf memakainya utk mengganti password sendiri,
-  // owner memakainya utk mengelola akun (daftar akun hanya dimuat kalau owner).
-  { href: "/pengaturan", label: "Pengaturan", icon: Settings },
-];
-
-const FLAT_ITEMS: NavLink[] = NAV_ITEMS.flatMap((e) => ("items" in e ? e.items : [e]));
-
 function isGroup(e: NavEntry): e is NavGroup {
   return "items" in e;
 }
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const router = useRouter();
   const { user, logout } = useAuth();
-  const { list, selected, setSelected } = useBadanUsaha();
+  const { list, selected, chosen, hydrated, resetWorkspace } = useBadanUsaha();
   const selectedBu = list.find((bu) => bu.kode === selected);
+  const isOwner = user?.role === "owner";
 
   const isActive = (href: string) => pathname === href || pathname?.startsWith(href + "/");
 
-  // Tab DKP/KKS global disembunyikan di halaman Laporan (Rekap Invoice & PO):
-  // halaman itu punya filter Semua/DKP/KKS sendiri & default menampilkan SEMUA.
-  const hideBuTab =
-    isActive("/invoices") || isActive("/po");
+  const doLogout = React.useCallback(() => {
+    resetWorkspace();
+    logout();
+  }, [resetWorkspace, logout]);
+
+  // Menu bertahap (permintaan owner 30 Jul 2026):
+  // - Awal (belum pilih workspace): Mitra, Dashboard, + Pengaturan (owner saja).
+  // - Setelah pilih DKP/KKS: muncul Terbit Invoice + Laporan (Rekap Invoice, PO).
+  const navItems: NavEntry[] = [
+    { href: "/mitra", label: "Mitra", icon: Users },
+    { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+  ];
+  if (chosen) {
+    navItems.push({ href: "/bap", label: "Terbit Invoice", icon: FileText });
+    navItems.push({ href: "/invoice-gantung", label: "Invoice Gantung", icon: Send });
+    navItems.push({
+      section: "Laporan",
+      items: [
+        { href: "/invoices", label: "Rekap Invoice", icon: Receipt },
+        { href: "/po", label: "Purchase Order", icon: ClipboardList },
+        { href: "/faktur-pajak", label: "Faktur Pajak", icon: FileCheck2 },
+      ],
+    });
+  }
+  if (isOwner) {
+    navItems.push({ href: "/pengaturan", label: "Pengaturan", icon: Settings });
+  }
+  const flatItems: NavLink[] = navItems.flatMap((e) => (isGroup(e) ? e.items : [e]));
+
+  // Belum pilih workspace -> arahkan ke layar pilih (satu-satunya tempat ganti workspace).
+  React.useEffect(() => {
+    if (!hydrated) return;
+    if (!chosen) router.replace("/pilih");
+  }, [hydrated, chosen, router]);
+
+  if (hydrated && !chosen) {
+    return (
+      <div className="flex min-h-screen flex-1 items-center justify-center text-sm text-muted-foreground">
+        Mengalihkan ke pilih workspace...
+      </div>
+    );
+  }
 
   return (
     <div className="flex min-h-screen flex-1">
@@ -79,7 +99,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <p className="text-xs text-muted-foreground">PO · BAP · Invoice</p>
         </div>
         <nav className="flex flex-1 flex-col gap-1">
-          {NAV_ITEMS.map((entry) => {
+          {navItems.map((entry) => {
             if (isGroup(entry)) {
               return (
                 <div key={entry.section} className="mt-3 flex flex-col gap-1">
@@ -135,9 +155,21 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <p className="text-sm font-semibold">Invoice System</p>
           </div>
 
-          <p className="hidden truncate text-sm text-muted-foreground md:block">
-            {!hideBuTab && selectedBu ? `${selectedBu.kode} — ${selectedBu.nama}` : ""}
-          </p>
+          <div className="hidden items-center gap-2 md:flex">
+            {chosen && selectedBu ? (
+              <>
+                <span className="rounded-md bg-primary/10 px-2.5 py-1 text-xs font-semibold text-primary">
+                  Workspace: {selectedBu.kode}
+                </span>
+                <Link
+                  href="/pilih"
+                  className="text-xs font-medium text-primary underline-offset-2 hover:underline"
+                >
+                  Ganti Workspace
+                </Link>
+              </>
+            ) : null}
+          </div>
 
           <div className="flex items-center gap-3">
             <DropdownMenu>
@@ -152,9 +184,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   <p className="text-sm font-medium">{user?.nama}</p>
                   <p className="text-xs font-normal text-muted-foreground">{user?.email}</p>
                   <p className="text-xs font-normal text-muted-foreground capitalize">{user?.role}</p>
+                  {chosen && selectedBu ? (
+                    <p className="mt-1 text-xs font-medium text-primary">Workspace: {selectedBu.kode}</p>
+                  ) : null}
                 </DropdownMenuLabel>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem onClick={logout} className="gap-2 text-destructive focus:text-destructive">
+                {chosen ? (
+                  <DropdownMenuItem onClick={() => router.push("/pilih")} className="gap-2">
+                    <ArrowLeftRight className="h-4 w-4" />
+                    Pindah Workspace (DKP/KKS)
+                  </DropdownMenuItem>
+                ) : null}
+                <DropdownMenuItem onClick={doLogout} className="gap-2 text-destructive focus:text-destructive">
                   <LogOut className="h-4 w-4" />
                   Keluar
                 </DropdownMenuItem>
@@ -163,31 +204,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </div>
         </header>
 
-        {/* Tab pemisah badan usaha (DKP/KKS). Disembunyikan di halaman Laporan yang
-            punya filter Semua/DKP/KKS sendiri. */}
-        {!hideBuTab ? (
-          <div className="flex items-center gap-1 overflow-x-auto border-b border-border bg-card px-4 py-2">
-            {list.map((bu) => (
-              <button
-                key={bu.kode}
-                type="button"
-                onClick={() => setSelected(bu.kode)}
-                className={cn(
-                  "whitespace-nowrap rounded-md px-3 py-1.5 text-xs font-semibold transition-colors",
-                  selected === bu.kode
-                    ? "bg-primary text-primary-foreground"
-                    : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-                )}
-                title={bu.nama}
-              >
-                {bu.kode}
-              </button>
-            ))}
-          </div>
-        ) : null}
-
         <nav className="flex items-center gap-1 overflow-x-auto border-b border-border bg-card px-2 py-1 md:hidden">
-          {FLAT_ITEMS.map((item) => {
+          {flatItems.map((item) => {
             const active = isActive(item.href);
             return (
               <Link

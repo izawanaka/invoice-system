@@ -10,6 +10,7 @@ const STATUS_MAP: Record<string, { variant: "default" | "secondary" | "destructi
   closed: { variant: "secondary" },
   selesai: { variant: "secondary" },
   generated: { variant: "warning", label: "Generated (belum bayar)" },
+  sebagian: { variant: "warning", label: "Cicilan (sebagian)" },
   paid: { variant: "success", label: "Lunas" },
   pending: { variant: "outline" },
   error: { variant: "destructive" },

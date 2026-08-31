@@ -1,0 +1,45 @@
+# Stack PRODUKSI invoice web (backend FastAPI + frontend Next.js).
+# Jalankan:   cd /home/izawa/invoice-system/deploy && docker compose -f docker-compose.prod.yml up -d --build
+# Single-origin: hanya invoice-web-prod yang diekspos publik (cloudflared).
+# invoice-api-prod TIDAK di-publish ke host, hanya dijangkau via network homelab
+# (rewrite Next.js di frontend/next.config.ts).
+services:
+  invoice-api:
+    build:
+      context: /home/izawa/invoice-system
+      dockerfile: deploy/backend.Dockerfile
+    container_name: invoice-api-prod
+    restart: unless-stopped
+    environment:
+      INVOICE_ENV: produksi
+      INVOICE_DATA: /app
+      INVOICE_DB: bisnis_izawa
+      INVOICE_SMB: "1"
+      WEBAPP_CORS_ORIGINS: "https://cocopeat.delianterra.com"
+      INVOICE_OUT: /app/pdf_local/DKP
+      INVOICE_OUT_KKS: /app/pdf_local/KKS
+    env_file:
+      - /home/izawa/invoice-system/.env
+    volumes:
+      - /home/izawa/invoice-system:/app
+      # Kredensial KHUSUS container: DB_HOST=bisnis-db (nama container di network
+      # homelab) -- menimpa file host yang isinya localhost.
+      - /home/izawa/invoice-system/.bisnis_db_credentials.docker:/app/.bisnis_db_credentials:ro
+      # Share PC (PDF invoice) -- sama seperti proses lama (mount CIFS host).
+      - /mnt/media/D:/mnt/media/D
+    networks:
+      - homelab
+
+  invoice-web:
+    build:
+      context: /home/izawa/invoice-system/frontend
+      args:
+        NEXT_PUBLIC_API_BASE: "/api"
+    container_name: invoice-web-prod
+    restart: unless-stopped
+    networks:
+      - homelab
+
+networks:
+  homelab:
+    external: true

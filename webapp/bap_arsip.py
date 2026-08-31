@@ -132,8 +132,7 @@ def _deteksi_mitra_pt(cur, site, badan_usaha_kode=None):
     if not site:
         return (None, "perlu_konfirmasi")
     cur.execute(
-        "SELECT id FROM app_mitra_pt WHERE aktif AND site IS NOT NULL "
-        "AND lower(site) = lower(%s)",
+        "SELECT id FROM app_mitra_pt WHERE aktif AND position(lower(%s) in lower(nama)) > 0",
         (site,),
     )
     ids = [r[0] for r in cur.fetchall()]

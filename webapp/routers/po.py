@@ -2,6 +2,8 @@ import os
 import uuid
 from typing import List, Optional
 
+import psycopg2
+
 from fastapi import (APIRouter, Depends, File, Form, HTTPException, Query, UploadFile,
                      status)
 from fastapi.responses import FileResponse
@@ -9,6 +11,7 @@ from fastapi.responses import FileResponse
 import settings  # noqa: F401 -- import pertama, lihat settings.py
 import config
 import db_helper
+import po_ocr
 import schemas
 import security
 from audit import log_audit
@@ -161,19 +164,31 @@ def create_po(
     if cur.fetchone() is not None:
         raise HTTPException(status_code=409, detail=f"PO {body.po_no} sudah ada untuk badan usaha ini")
 
-    cur.execute(
-        "INSERT INTO purchase_orders "
-        "(badan_usaha_id, po_no, site, customer, total_qty, used_qty, satuan, harga_satuan, "
-        "cust_addr, payment_terms, status, tgl_masuk, catatan, warning_threshold_pct) "
-        "VALUES (%s, %s, %s, %s, %s, 0, %s, %s, %s, %s, 'aktif', %s, %s, %s) "
-        "RETURNING id, created_at",
-        (
-            bu_id, body.po_no, body.site, body.customer, body.total_qty, body.satuan,
-            body.harga_satuan, body.cust_addr, body.payment_terms,
-            body.tgl_masuk, body.catatan, body.warning_threshold_pct,
-        ),
-    )
-    new_id, created_at = cur.fetchone()
+    try:
+        cur.execute(
+            "INSERT INTO purchase_orders "
+            "(badan_usaha_id, po_no, site, customer, total_qty, used_qty, satuan, harga_satuan, "
+            "cust_addr, payment_terms, status, tgl_masuk, catatan, warning_threshold_pct) "
+            "VALUES (%s, %s, %s, %s, %s, 0, %s, %s, %s, %s, 'aktif', %s, %s, %s) "
+            "RETURNING id, created_at",
+            (
+                bu_id, body.po_no, body.site, body.customer, body.total_qty, body.satuan,
+                body.harga_satuan, body.cust_addr, body.payment_terms,
+                body.tgl_masuk, body.catatan, body.warning_threshold_pct,
+            ),
+        )
+        new_id, created_at = cur.fetchone()
+    except psycopg2.errors.UniqueViolation:
+        # Fase 1: jaring pengaman race-condition -- pengecekan 409 di atas sudah
+        # ada, tapi kalau dua request PO yang sama persis lolos bersamaan
+        # (celah waktu antara SELECT cek di atas dan INSERT ini), constraint DB
+        # uq_po_per_badu yang jadi penjaga terakhir. Tanpa except ini, klien akan
+        # menerima 500 mentah alih-alih pesan yang jelas.
+        conn.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail=f"PO {body.po_no} sudah ada untuk badan usaha ini (terdeteksi saat commit)",
+        )
     log_audit(conn, user.id, "create", "purchase_orders", new_id, body.model_dump(mode="json"))
     conn.commit()
 
@@ -195,6 +210,50 @@ def create_po(
         catatan=body.catatan, warning_threshold_pct=body.warning_threshold_pct,
         created_at=created_at,
     )
+
+
+# ---------- Ekstraksi OCR PO (Fase 2, 30 Jul 2026) ----------
+# Endpoint ini HANYA membaca dokumen & mengembalikan pratinjau JSON -- TIDAK
+# menyimpan apa pun ke DB. Penyimpanan sesungguhnya tetap lewat POST /po biasa
+# (di atas) setelah user meninjau/melengkapi hasil ekstraksi ini di web (aturan
+# owner: "selalu tanya ke user sebelum lanjut" utk field yang tidak yakin).
+
+@router.post("/ocr", response_model=schemas.POOcrOut)
+async def ocr_po(
+    file: UploadFile = File(...),
+    badan_usaha_kode: Optional[str] = Form(default=None),
+    conn=Depends(get_db),
+    user: security.CurrentUser = Depends(security.get_current_user),
+):
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="File kosong")
+    if len(data) > 20 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File terlalu besar (maks 20 MB)")
+
+    try:
+        hasil = po_ocr.ekstrak_po(file.filename or "dokumen.jpg", data)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Gagal membaca dokumen: {e}")
+
+    # Kalau badan usaha & po_no sama-sama diketahui, kabari dini kalau PO ini
+    # sudah ada -- pengecekan FINAL & mengikat tetap di POST /po (409) saat
+    # user menyimpan, ini cuma info tambahan di pratinjau.
+    if badan_usaha_kode and hasil.get("po_no"):
+        try:
+            bu_id, _ = _get_badan_usaha(conn, badan_usaha_kode)
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT id FROM purchase_orders WHERE badan_usaha_id = %s AND po_no = %s",
+                (bu_id, hasil["po_no"]),
+            )
+            hasil["po_no_sudah_ada"] = cur.fetchone() is not None
+        except HTTPException:
+            raise
+        except Exception:
+            hasil["po_no_sudah_ada"] = None
+
+    return schemas.POOcrOut(**hasil)
 
 
 # ---------- Arsip scan PO asli dari customer ----------
@@ -278,3 +337,107 @@ def download_po_dokumen(
     if not os.path.exists(path):
         raise HTTPException(status_code=410, detail="Berkas tidak ada lagi di server")
     return FileResponse(path, filename=orig or os.path.basename(path))
+
+
+@router.delete("/{po_no}")
+def hapus_po(
+    po_no: str,
+    badan_usaha_kode: str = Query(...),
+    conn=Depends(get_db),
+    user: security.CurrentUser = Depends(security.get_current_user),
+):
+    """Hapus PO yang SALAH diunggah. Ditolak kalau PO sudah dipakai invoice
+    (ada baris invoices/invoice_items yang mengacu) demi jaga integritas data.
+    Dokumen scan PO & tautan PT ikut dihapus. Tracker JSON di-regenerate dari DB
+    (Invariant I8)."""
+    bu_id, _aktif = _get_badan_usaha(conn, badan_usaha_kode)
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM purchase_orders WHERE badan_usaha_id = %s AND po_no = %s", (bu_id, po_no))
+    row = cur.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"PO {po_no} tidak ditemukan untuk {badan_usaha_kode.upper()}")
+    po_id = row[0]
+    cur.execute("SELECT count(*) FROM invoices WHERE po_id = %s", (po_id,))
+    n_inv = cur.fetchone()[0]
+    cur.execute("SELECT count(*) FROM invoice_items WHERE po_id = %s", (po_id,))
+    n_items = cur.fetchone()[0]
+    if n_inv > 0 or n_items > 0:
+        raise HTTPException(
+            status_code=409,
+            detail=(f"PO {po_no} tidak bisa dihapus karena sudah dipakai invoice "
+                    f"({n_inv} invoice, {n_items} baris item). Batalkan/hapus invoicenya dulu."),
+        )
+    cur.execute("DELETE FROM app_po_doc WHERE po_id = %s", (po_id,))
+    cur.execute("DELETE FROM app_mitra_po WHERE po_id = %s", (po_id,))
+    cur.execute("DELETE FROM purchase_orders WHERE id = %s", (po_id,))
+    log_audit(conn, user.id, "hapus_po", "purchase_orders", po_id,
+              {"po_no": po_no, "badan_usaha": badan_usaha_kode.upper()})
+    conn.commit()
+    kode_upper = badan_usaha_kode.upper()
+    if kode_upper in _TRACKER_REFRESH:
+        t = _TRACKER_REFRESH[kode_upper]
+        try:
+            db_helper.refresh_po_tracker_json(conn, bu_id, t["file"], t["qty"], t["used"], t["price"], t["unit"])
+        except Exception as e:
+            print(f"  PERINGATAN: PO dihapus di DB tapi gagal refresh {t['file']}: {e}")
+    return {"deleted": po_no, "badan_usaha_kode": kode_upper}
+
+
+@router.post("/{po_no}/status")
+def set_po_status(
+    po_no: str,
+    badan_usaha_kode: str = Query(...),
+    status_baru: str = Query(..., alias="status"),
+    conn=Depends(get_db),
+    user: security.CurrentUser = Depends(security.get_current_user),
+):
+    """Ubah status PO: 'aktif' <-> 'selesai' (mis. menonaktifkan PO yang sudah
+    tidak disupply lagi). PO 'selesai' tidak lagi ikut alokasi invoice. Tracker
+    JSON di-regenerate dari DB (Invariant I8)."""
+    allowed = {"aktif", "selesai", "batal"}
+    if status_baru not in allowed:
+        raise HTTPException(status_code=400, detail=f"Status tidak valid: {status_baru}. Pilihan: {sorted(allowed)}")
+    bu_id, _aktif = _get_badan_usaha(conn, badan_usaha_kode)
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM purchase_orders WHERE badan_usaha_id = %s AND po_no = %s", (bu_id, po_no))
+    row = cur.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"PO {po_no} tidak ditemukan untuk {badan_usaha_kode.upper()}")
+    po_id = row[0]
+    cur.execute("UPDATE purchase_orders SET status = %s WHERE id = %s", (status_baru, po_id))
+    log_audit(conn, user.id, "set_po_status", "purchase_orders", po_id,
+              {"po_no": po_no, "status": status_baru})
+    conn.commit()
+    kode_upper = badan_usaha_kode.upper()
+    if kode_upper in _TRACKER_REFRESH:
+        t = _TRACKER_REFRESH[kode_upper]
+        try:
+            db_helper.refresh_po_tracker_json(conn, bu_id, t["file"], t["qty"], t["used"], t["price"], t["unit"])
+        except Exception as e:
+            print(f"  PERINGATAN: status PO diubah tapi gagal refresh {t['file']}: {e}")
+    return {"po_no": po_no, "status": status_baru}
+
+
+@router.delete("/dokumen/{doc_id}")
+def hapus_po_dokumen(
+    doc_id: int,
+    conn=Depends(get_db),
+    user: security.CurrentUser = Depends(security.get_current_user),
+):
+    """Hapus SATU scan/dokumen PO yang salah diunggah (record app_po_doc + file).
+    Tidak menyentuh PO/invoice -- hanya membuang berkas scan yang keliru."""
+    cur = conn.cursor()
+    cur.execute("SELECT file_path, original_filename FROM app_po_doc WHERE id = %s", (doc_id,))
+    row = cur.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Dokumen PO tidak ditemukan")
+    path, orig = row
+    cur.execute("DELETE FROM app_po_doc WHERE id = %s", (doc_id,))
+    log_audit(conn, user.id, "hapus_po_dokumen", "app_po_doc", doc_id, {"file": orig})
+    conn.commit()
+    try:
+        if path and os.path.exists(path):
+            os.remove(path)
+    except Exception:
+        pass
+    return {"deleted": doc_id}

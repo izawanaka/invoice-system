@@ -32,3 +32,13 @@ webapp/venv/
 webapp/.jwt_secret
 __pycache__/
 *.pyc
+.env
+
+# ==== tambahan 31 Agu 2026: tutup celah kredensial & sampah ====
+.bisnis_db_credentials*
+*.bak
+*.bak_*
+graphify-out/
+bap_uploads/
+invoices_export.json
+apply_fix_pajak.sh

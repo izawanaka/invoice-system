@@ -58,7 +58,7 @@ export default function LoginPage() {
     try {
       const res = await loginVerify(email, kode);
       setToken(res.access_token);
-      window.location.assign("/dashboard");
+      window.location.assign("/pilih");
     } catch (err) {
       const message = err instanceof ApiError ? err.message : "Verifikasi gagal. Coba lagi.";
       toast.error(message);
@@ -72,7 +72,7 @@ export default function LoginPage() {
     setSubmitting(true);
     try {
       await login(email, password);
-      router.replace("/dashboard");
+      router.replace("/pilih");
     } catch (err) {
       const message = err instanceof ApiError ? err.message : "Gagal masuk. Periksa koneksi Anda.";
       toast.error(message);

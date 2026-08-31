@@ -56,6 +56,13 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 // Tahap dokumen fisik invoice (operasional, TERPISAH dari pelunasan status).
 const TAHAP_LABEL: Record<string, string> = {
@@ -425,6 +432,13 @@ function InvoicesContent() {
   const [cekTarget, setCekTarget] = React.useState<InvoiceOut | null>(null);
   const [batalTarget, setBatalTarget] = React.useState<InvoiceOut | null>(null);
   const [membatalkan, setMembatalkan] = React.useState(false);
+  // Fitur centang & jumlah otomatis (owner): cari kombinasi invoice yang cocok
+  // dengan satu pembayaran gabungan dari customer.
+  const [siteFilter, setSiteFilter] = React.useState<string>("ALL");
+  const [dipilih, setDipilih] = React.useState<Record<string, boolean>>({});
+  const [lunaskanOpen, setLunaskanOpen] = React.useState(false);
+  const [tglBayarMassal, setTglBayarMassal] = React.useState(() => new Date().toISOString().slice(0, 10));
+  const [melunasi, setMelunasi] = React.useState(false);
 
   const load = React.useCallback(() => {
     setLoading(true);
@@ -446,23 +460,101 @@ function InvoicesContent() {
     load();
   }, [load]);
 
+  // Ganti workspace -> kosongkan centang & filter site (daftar site ikut berganti).
+  React.useEffect(() => {
+    setDipilih({});
+    setSiteFilter("ALL");
+  }, [buFilter]);
+
   // Outstanding = belum lunas (mencakup "generated" & "sebagian"/cicilan).
   // Begitu status jadi "paid", baris otomatis pindah ke tab Lunas saat data
   // di-refresh (mis. sesudah "Lunaskan Sisa" di dialog Kelola Pembayaran).
+  // Saring per site dulu (dropdown "Semua Site" / nama site) -- tab & hitungan ikut.
+  const bySite = React.useMemo(
+    () => (siteFilter === "ALL" ? invoiceList : invoiceList.filter((inv) => (inv.site ?? "-") === siteFilter)),
+    [invoiceList, siteFilter],
+  );
+  const siteList = React.useMemo(() => {
+    const s = new Set<string>();
+    invoiceList.forEach((inv) => s.add(inv.site ?? "-"));
+    return Array.from(s).sort();
+  }, [invoiceList]);
   const displayList = React.useMemo(() => {
-    if (!bolehLihatPelunasan) return invoiceList;
+    if (!bolehLihatPelunasan) return bySite;
     return activeTab === "outstanding"
-      ? invoiceList.filter((inv) => inv.status !== "paid")
-      : invoiceList.filter((inv) => inv.status === "paid");
-  }, [invoiceList, bolehLihatPelunasan, activeTab]);
+      ? bySite.filter((inv) => inv.status !== "paid")
+      : bySite.filter((inv) => inv.status === "paid");
+  }, [bySite, bolehLihatPelunasan, activeTab]);
   const outstandingCount = React.useMemo(
-    () => invoiceList.filter((inv) => inv.status !== "paid").length,
-    [invoiceList],
+    () => bySite.filter((inv) => inv.status !== "paid").length,
+    [bySite],
   );
   const lunasCount = React.useMemo(
-    () => invoiceList.filter((inv) => inv.status === "paid").length,
-    [invoiceList],
+    () => bySite.filter((inv) => inv.status === "paid").length,
+    [bySite],
   );
+  // Invoice yang dicentang (kunci = no_invoice) + jumlah otomatisnya.
+  const terpilihList = React.useMemo(
+    () => invoiceList.filter((inv) => dipilih[inv.no_invoice]),
+    [invoiceList, dipilih],
+  );
+  const totalTerpilih = React.useMemo(() => {
+    let tagihan = 0;
+    let dibayar = 0;
+    terpilihList.forEach((inv) => {
+      const grand = inv.grand_total ?? 0;
+      tagihan += grand;
+      // Invoice lunas lama (paid sebelum fitur cicilan ada) tidak punya baris
+      // cicilan -- anggap terbayar penuh supaya Sisa Tagihan tidak menyesatkan.
+      dibayar += inv.status === "paid" ? Math.max(grand, inv.total_dibayar ?? 0) : inv.total_dibayar ?? 0;
+    });
+    return { tagihan, dibayar, sisa: Math.max(tagihan - dibayar, 0) };
+  }, [terpilihList]);
+  const semuaTampilTercentang =
+    displayList.length > 0 && displayList.every((inv) => dipilih[inv.no_invoice]);
+
+  function toggleSemua() {
+    setDipilih((prev) => {
+      const next = { ...prev };
+      if (semuaTampilTercentang) displayList.forEach((inv) => delete next[inv.no_invoice]);
+      else
+        displayList.forEach((inv) => {
+          next[inv.no_invoice] = true;
+        });
+      return next;
+    });
+  }
+
+  // Lunaskan semua invoice terpilih yang belum lunas: pakai endpoint pembayaran
+  // per-invoice yang sudah teruji (lunaskan=true = bayar sisa), satu per satu.
+  async function handleLunaskanTerpilih() {
+    const targets = terpilihList.filter((inv) => inv.status !== "paid");
+    if (targets.length === 0) {
+      toast.error("Tidak ada invoice terpilih yang masih punya sisa tagihan.");
+      return;
+    }
+    setMelunasi(true);
+    let sukses = 0;
+    const gagal: string[] = [];
+    for (const inv of targets) {
+      try {
+        await catatPembayaran(inv.no_invoice, {
+          lunaskan: true,
+          tgl_bayar: tglBayarMassal,
+          catatan: "Pelunasan massal (Rekap Invoice)",
+        });
+        sukses += 1;
+      } catch {
+        gagal.push(inv.no_invoice);
+      }
+    }
+    setMelunasi(false);
+    setLunaskanOpen(false);
+    if (sukses > 0) toast.success(`${sukses} invoice ditandai lunas.`);
+    if (gagal.length > 0) toast.error(`Gagal melunaskan: ${gagal.join(", ")}`);
+    setDipilih({});
+    load();
+  }
 
   async function handleUnduhResi(inv: InvoiceOut) {
     try {
@@ -516,6 +608,19 @@ function InvoicesContent() {
             <span className="rounded-md bg-primary/10 px-2.5 py-1 text-xs font-semibold text-primary">
               Workspace: {selected}
             </span>
+            <Select value={siteFilter} onValueChange={setSiteFilter}>
+              <SelectTrigger className="h-8 w-[180px]">
+                <SelectValue placeholder="Semua Site" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="ALL">Semua Site</SelectItem>
+                {siteList.map((st) => (
+                  <SelectItem key={st} value={st}>
+                    {st}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
           {bolehLihatPelunasan ? (
             <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "outstanding" | "lunas")}>
@@ -530,8 +635,20 @@ function InvoicesContent() {
           <Table>
             <TableHeader>
               <TableRow>
+                {bolehLihatPelunasan ? (
+                  <TableHead className="w-8">
+                    <input
+                      type="checkbox"
+                      aria-label="Pilih semua yang tampil"
+                      className="h-4 w-4 accent-primary align-middle"
+                      checked={semuaTampilTercentang}
+                      onChange={toggleSemua}
+                    />
+                  </TableHead>
+                ) : null}
                 <TableHead>No. Invoice</TableHead>
                 <TableHead>Tanggal</TableHead>
+                <TableHead>Site</TableHead>
                 <TableHead>Grand Total</TableHead>
                 {bolehLihatPelunasan ? <TableHead>Status</TableHead> : null}
                 {bolehLihatPelunasan ? <TableHead>Outstanding</TableHead> : null}
@@ -543,13 +660,13 @@ function InvoicesContent() {
             <TableBody>
               {loading ? (
                 <TableRow>
-                  <TableCell colSpan={bolehLihatPelunasan ? 8 : 6} className="text-center text-muted-foreground">
+                  <TableCell colSpan={bolehLihatPelunasan ? 10 : 7} className="text-center text-muted-foreground">
                     Memuat...
                   </TableCell>
                 </TableRow>
               ) : displayList.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={bolehLihatPelunasan ? 8 : 6} className="text-center text-muted-foreground">
+                  <TableCell colSpan={bolehLihatPelunasan ? 10 : 7} className="text-center text-muted-foreground">
                     {bolehLihatPelunasan
                       ? activeTab === "outstanding"
                         ? "Tidak ada invoice outstanding (semua sudah lunas)."
@@ -559,9 +676,23 @@ function InvoicesContent() {
                 </TableRow>
               ) : (
                 displayList.map((inv) => (
-                  <TableRow key={inv.id}>
+                  <TableRow key={inv.id} data-state={dipilih[inv.no_invoice] ? "selected" : undefined}>
+                    {bolehLihatPelunasan ? (
+                      <TableCell>
+                        <input
+                          type="checkbox"
+                          aria-label={`Pilih ${inv.no_invoice}`}
+                          className="h-4 w-4 accent-primary align-middle"
+                          checked={!!dipilih[inv.no_invoice]}
+                          onChange={() =>
+                            setDipilih((prev) => ({ ...prev, [inv.no_invoice]: !prev[inv.no_invoice] }))
+                          }
+                        />
+                      </TableCell>
+                    ) : null}
                     <TableCell>{inv.no_invoice}</TableCell>
                     <TableCell>{formatDate(inv.tgl_invoice)}</TableCell>
+                    <TableCell>{inv.site ?? "-"}</TableCell>
                     <TableCell>{formatIDR(inv.grand_total)}</TableCell>
                     {bolehLihatPelunasan ? (
                       <TableCell>
@@ -635,6 +766,34 @@ function InvoicesContent() {
         </CardContent>
       </Card>
 
+      {bolehLihatPelunasan && terpilihList.length > 0 ? (
+        <div className="sticky bottom-2 z-10 flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-card p-3 shadow-lg">
+          <div className="flex flex-wrap items-center gap-4">
+            <span className="text-sm font-medium">{terpilihList.length} invoice dipilih</span>
+            <div className="text-sm">
+              <span className="text-muted-foreground">Total Tagihan: </span>
+              <span className="font-semibold">{formatIDR(totalTerpilih.tagihan)}</span>
+            </div>
+            <div className="text-sm">
+              <span className="text-muted-foreground">Sudah Dibayar: </span>
+              <span className="font-semibold text-success">{formatIDR(totalTerpilih.dibayar)}</span>
+            </div>
+            <div className="text-sm">
+              <span className="text-muted-foreground">Sisa Tagihan: </span>
+              <span className="font-semibold text-warning">{formatIDR(totalTerpilih.sisa)}</span>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={() => setDipilih({})}>
+              Kosongkan
+            </Button>
+            <Button size="sm" onClick={() => setLunaskanOpen(true)} disabled={totalTerpilih.sisa <= 0}>
+              Lunaskan Terpilih
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
       <PaymentDialog
         invoice={paymentTarget}
         open={paymentTarget !== null}
@@ -658,6 +817,38 @@ function InvoicesContent() {
         open={cekTarget !== null}
         onOpenChange={(v) => !v && setCekTarget(null)}
       />
+
+      <Dialog open={lunaskanOpen} onOpenChange={(o) => !o && !melunasi && setLunaskanOpen(false)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              Lunaskan {terpilihList.filter((i) => i.status !== "paid").length} Invoice?
+            </DialogTitle>
+            <DialogDescription>
+              Sisa tagihan sebesar {formatIDR(totalTerpilih.sisa)} akan dicatat sebagai pembayaran
+              pelunasan untuk semua invoice terpilih yang belum lunas (invoice yang sudah lunas
+              otomatis dilewati). Cocokkan dulu angka ini dengan uang yang masuk di rekening.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="tgl_bayar_massal">Tanggal Bayar</Label>
+            <Input
+              id="tgl_bayar_massal"
+              type="date"
+              value={tglBayarMassal}
+              onChange={(e) => setTglBayarMassal(e.target.value)}
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setLunaskanOpen(false)} disabled={melunasi}>
+              Batal
+            </Button>
+            <Button onClick={handleLunaskanTerpilih} disabled={melunasi}>
+              {melunasi ? "Memproses..." : "Ya, Lunaskan Semua"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={!!batalTarget} onOpenChange={(o) => !o && setBatalTarget(null)}>
         <DialogContent>

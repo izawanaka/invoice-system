@@ -3,15 +3,23 @@
 import * as React from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { Plus } from "lucide-react";
+import { Plus, ScanLine } from "lucide-react";
 
 import { RequireAuth } from "@/components/require-auth";
 import { AppShell } from "@/components/app-shell";
 import { useBadanUsaha } from "@/lib/badan-usaha-context";
 import { isUnauthorized } from "@/lib/auth-context";
-import { ApiError, createPO, listPO } from "@/lib/api";
-import type { POCreateRequest, POSisaOut } from "@/lib/types";
-import { formatIDR, formatQty, cn } from "@/lib/utils";
+import {
+  ApiError,
+  createPO,
+  deletePO,
+  listPO,
+  ocrExtractPO,
+  setPOStatus,
+  uploadPODokumen,
+} from "@/lib/api";
+import type { POCreateRequest, POOcrOut, POSisaOut } from "@/lib/types";
+import { formatIDR, formatQty } from "@/lib/utils";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -60,55 +68,34 @@ const EMPTY_FORM: POCreateRequest = {
   warning_threshold_pct: 80,
 };
 
-function BuFilterPills({
-  options,
-  value,
-  onChange,
-}: {
-  options: string[];
-  value: string;
-  onChange: (v: string) => void;
-}) {
-  const all = ["ALL", ...options];
-  return (
-    <div className="flex items-center gap-1">
-      {all.map((opt) => (
-        <button
-          key={opt}
-          type="button"
-          onClick={() => onChange(opt)}
-          className={cn(
-            "rounded-md px-3 py-1.5 text-xs font-semibold transition-colors",
-            value === opt
-              ? "bg-primary text-primary-foreground"
-              : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
-          )}
-        >
-          {opt === "ALL" ? "Semua" : opt}
-        </button>
-      ))}
-    </div>
-  );
-}
-
 function POContent() {
-  const { list: buList } = useBadanUsaha();
+  const { list: buList, selected } = useBadanUsaha();
   const router = useRouter();
   const [poList, setPoList] = React.useState<POSisaOut[]>([]);
   const [loading, setLoading] = React.useState(true);
-  const [buFilter, setBuFilter] = React.useState("ALL");
+  const buFilter = selected;
   const [statusFilter, setStatusFilter] = React.useState<string>("ALL");
   const [warningOnly, setWarningOnly] = React.useState(false);
   const [dialogOpen, setDialogOpen] = React.useState(false);
   const [form, setForm] = React.useState<POCreateRequest>(EMPTY_FORM);
   const [submitting, setSubmitting] = React.useState(false);
+  const [hapusPo, setHapusPo] = React.useState<POSisaOut | null>(null);
+  const [deletingPo, setDeletingPo] = React.useState(false);
+  const [siteQuery, setSiteQuery] = React.useState("");
 
-  const buOptions = buList.map((bu) => bu.kode);
+  // ---- Wizard "Tambah PO dari Foto/Scan" (Fase 2, 30 Jul 2026) ----
+  const [ocrDialogOpen, setOcrDialogOpen] = React.useState(false);
+  const [ocrFile, setOcrFile] = React.useState<File | null>(null);
+  const [ocrLoading, setOcrLoading] = React.useState(false);
+  const [ocrResult, setOcrResult] = React.useState<POOcrOut | null>(null);
+  const [ocrForm, setOcrForm] = React.useState<POCreateRequest>(EMPTY_FORM);
+  const [ocrSubmitting, setOcrSubmitting] = React.useState(false);
+
 
   const load = React.useCallback(() => {
     setLoading(true);
     listPO({
-      badan_usaha_kode: buFilter === "ALL" ? undefined : buFilter,
+      badan_usaha_kode: buFilter,
       warning_only: warningOnly || undefined,
     })
       .then(setPoList)
@@ -124,14 +111,16 @@ function POContent() {
   }, [load]);
 
   const filteredPo = React.useMemo(() => {
+    const q = siteQuery.trim().toLowerCase();
     return poList.filter((po) => {
       const sisa = Number(po.sisa_qty ?? 0);
       const aktif = po.status === "aktif" && sisa > 1e-6;
-      if (statusFilter === "aktif") return aktif;
-      if (statusFilter === "selesai") return !aktif;
+      if (statusFilter === "aktif" && !aktif) return false;
+      if (statusFilter === "selesai" && aktif) return false;
+      if (q && !(po.site ?? "").toLowerCase().includes(q)) return false;
       return true;
     });
-  }, [poList, statusFilter]);
+  }, [poList, statusFilter, siteQuery]);
 
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
@@ -153,6 +142,100 @@ function POContent() {
     }
   }
 
+  function resetOcrWizard() {
+    setOcrFile(null);
+    setOcrResult(null);
+    setOcrForm({ ...EMPTY_FORM, badan_usaha_kode: selected });
+  }
+
+  async function handleOcrExtract() {
+    if (!ocrFile) {
+      toast.error("Pilih foto/scan PO terlebih dahulu.");
+      return;
+    }
+    setOcrLoading(true);
+    try {
+      const hasil = await ocrExtractPO(ocrFile, ocrForm.badan_usaha_kode || undefined);
+      setOcrResult(hasil);
+      setOcrForm((f) => ({
+        ...f,
+        po_no: hasil.po_no ?? "",
+        site: hasil.site_saran ?? "",
+        customer: hasil.customer ?? "",
+        total_qty: hasil.total_qty ?? 0,
+        satuan: hasil.satuan ?? "",
+        harga_satuan: hasil.harga_satuan ?? 0,
+        tgl_masuk: hasil.tanggal ?? null,
+      }));
+      if (hasil.po_no_sudah_ada) {
+        toast.warning(`PO ${hasil.po_no} sepertinya SUDAH ADA -- periksa kembali sebelum menyimpan.`);
+      }
+      if (hasil.catatan_keraguan) {
+        toast.warning("Ada field yang tidak yakin terbaca -- lihat catatan di bawah, lengkapi manual.");
+      }
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Gagal membaca dokumen.");
+    } finally {
+      setOcrLoading(false);
+    }
+  }
+
+  async function handleOcrSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!ocrForm.badan_usaha_kode) {
+      toast.error("Pilih badan usaha terlebih dahulu.");
+      return;
+    }
+    setOcrSubmitting(true);
+    try {
+      await createPO(ocrForm);
+      // Arsipkan otomatis berkas yang tadi dipakai OCR (keputusan owner: scan asli
+      // WAJIB tersimpan di app_po_doc) -- kegagalan arsip TIDAK membatalkan PO yang
+      // sudah tersimpan, hanya diberi peringatan.
+      if (ocrFile) {
+        try {
+          await uploadPODokumen(ocrForm.po_no, ocrForm.badan_usaha_kode, ocrFile);
+        } catch {
+          toast.warning(`PO ${ocrForm.po_no} tersimpan, tapi gagal mengarsipkan berkas scan. Unggah manual di halaman rincian PO.`);
+        }
+      }
+      toast.success(`PO ${ocrForm.po_no} berhasil dicatat dari hasil OCR.`);
+      setOcrDialogOpen(false);
+      resetOcrWizard();
+      load();
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Gagal menyimpan PO.");
+    } finally {
+      setOcrSubmitting(false);
+    }
+  }
+
+  async function handleHapusPo() {
+    if (!hapusPo) return;
+    setDeletingPo(true);
+    try {
+      await deletePO(hapusPo.po_no, hapusPo.kode);
+      toast.success(`PO ${hapusPo.po_no} dihapus.`);
+      setHapusPo(null);
+      load();
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Gagal menghapus PO.");
+    } finally {
+      setDeletingPo(false);
+    }
+  }
+
+  async function handleToggleStatus(po: POSisaOut) {
+    const target = po.status === "aktif" ? "selesai" : "aktif";
+    try {
+      await setPOStatus(po.po_no, po.kode, target);
+      toast.success(`PO ${po.po_no} ${target === "aktif" ? "diaktifkan kembali" : "dinonaktifkan"}.`);
+      load();
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Gagal mengubah status PO.");
+    }
+  }
+
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -160,7 +243,14 @@ function POContent() {
           <h1 className="text-xl font-semibold">Purchase Order</h1>
           <p className="text-sm text-muted-foreground">Daftar PO dan sisa kuantitas per PO.</p>
         </div>
-        <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+        <Dialog
+          open={dialogOpen}
+          onOpenChange={(v) => {
+            setDialogOpen(v);
+            // Prefill badan usaha dgn workspace aktif (DKP/KKS) -- tetap bisa diganti.
+            if (v) setForm((f) => ({ ...f, badan_usaha_kode: f.badan_usaha_kode || selected }));
+          }}
+        >
           <DialogTrigger asChild>
             <Button className="gap-1.5">
               <Plus className="h-4 w-4" /> Catat PO Baru
@@ -291,15 +381,217 @@ function POContent() {
             </form>
           </DialogContent>
         </Dialog>
+        <Dialog
+          open={ocrDialogOpen}
+          onOpenChange={(v) => {
+            setOcrDialogOpen(v);
+            if (v) setOcrForm((f) => ({ ...f, badan_usaha_kode: f.badan_usaha_kode || selected }));
+            if (!v) resetOcrWizard();
+          }}
+        >
+          <DialogTrigger asChild>
+            <Button variant="outline" className="gap-1.5">
+              <ScanLine className="h-4 w-4" /> Tambah PO dari Foto/Scan
+            </Button>
+          </DialogTrigger>
+          <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-xl">
+            <DialogHeader>
+              <DialogTitle>Tambah PO dari Foto/Scan</DialogTitle>
+              <DialogDescription>
+                Unggah foto/scan PO -- sistem membaca isinya otomatis. Field yang tidak
+                yakin terbaca akan DIKOSONGKAN dan WAJIB diisi/diperiksa manual sebelum
+                disimpan (tidak ada yang ditebak).
+              </DialogDescription>
+            </DialogHeader>
+
+            {!ocrResult ? (
+              <div className="flex flex-col gap-3">
+                <div className="flex flex-col gap-1.5">
+                  <Label>Badan Usaha</Label>
+                  <Select
+                    value={ocrForm.badan_usaha_kode}
+                    onValueChange={(v) => setOcrForm((f) => ({ ...f, badan_usaha_kode: v }))}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Pilih badan usaha" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {buList.map((bu) => (
+                        <SelectItem key={bu.kode} value={bu.kode}>
+                          {bu.kode} — {bu.nama}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="ocr_file">Foto / Scan PO (JPG, PNG, atau PDF)</Label>
+                  <Input
+                    id="ocr_file"
+                    type="file"
+                    accept=".jpg,.jpeg,.png,.webp,.pdf,image/*,application/pdf"
+                    onChange={(e) => setOcrFile(e.target.files?.[0] ?? null)}
+                  />
+                </div>
+                <DialogFooter>
+                  <Button type="button" disabled={ocrLoading || !ocrFile} onClick={handleOcrExtract}>
+                    {ocrLoading ? "Membaca dokumen..." : "Baca & Ekstrak"}
+                  </Button>
+                </DialogFooter>
+              </div>
+            ) : (
+              <form onSubmit={handleOcrSubmit} className="flex flex-col gap-3">
+                {ocrResult.catatan_keraguan && (
+                  <div className="rounded-md border border-amber-300 bg-amber-50 p-2.5 text-xs text-amber-800">
+                    <span className="font-semibold">Catatan keraguan OCR: </span>
+                    {ocrResult.catatan_keraguan}
+                  </div>
+                )}
+                {ocrResult.po_no_sudah_ada && (
+                  <div className="rounded-md border border-destructive/40 bg-destructive/10 p-2.5 text-xs text-destructive">
+                    PO ini kemungkinan SUDAH ADA di badan usaha yang dipilih. Periksa
+                    kembali nomor PO sebelum menyimpan.
+                  </div>
+                )}
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="flex flex-col gap-1.5 col-span-2">
+                    <Label>Badan Usaha</Label>
+                    <Select
+                      value={ocrForm.badan_usaha_kode}
+                      onValueChange={(v) => setOcrForm((f) => ({ ...f, badan_usaha_kode: v }))}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Pilih badan usaha" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {buList.map((bu) => (
+                          <SelectItem key={bu.kode} value={bu.kode}>
+                            {bu.kode} — {bu.nama}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor="ocr_po_no">
+                      Nomor PO {!ocrForm.po_no && <span className="text-destructive">(perlu diisi manual)</span>}
+                    </Label>
+                    <Input
+                      id="ocr_po_no"
+                      required
+                      className={!ocrForm.po_no ? "border-destructive" : undefined}
+                      value={ocrForm.po_no}
+                      onChange={(e) => setOcrForm((f) => ({ ...f, po_no: e.target.value }))}
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor="ocr_site">
+                      Site {!ocrForm.site && <span className="text-destructive">(perlu diisi manual)</span>}
+                    </Label>
+                    <Input
+                      id="ocr_site"
+                      required
+                      className={!ocrForm.site ? "border-destructive" : undefined}
+                      value={ocrForm.site}
+                      onChange={(e) => setOcrForm((f) => ({ ...f, site: e.target.value }))}
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1.5 col-span-2">
+                    <Label htmlFor="ocr_customer">
+                      Customer {!ocrForm.customer && <span className="text-destructive">(perlu diisi manual)</span>}
+                    </Label>
+                    <Input
+                      id="ocr_customer"
+                      required
+                      className={!ocrForm.customer ? "border-destructive" : undefined}
+                      value={ocrForm.customer}
+                      onChange={(e) => setOcrForm((f) => ({ ...f, customer: e.target.value }))}
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor="ocr_total_qty">
+                      Total Qty {!ocrForm.total_qty && <span className="text-destructive">(perlu diisi manual)</span>}
+                    </Label>
+                    <Input
+                      id="ocr_total_qty"
+                      type="number"
+                      step="any"
+                      required
+                      className={!ocrForm.total_qty ? "border-destructive" : undefined}
+                      value={ocrForm.total_qty}
+                      onChange={(e) => setOcrForm((f) => ({ ...f, total_qty: Number(e.target.value) }))}
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor="ocr_satuan">
+                      Satuan {!ocrForm.satuan && <span className="text-destructive">(perlu diisi manual)</span>}
+                    </Label>
+                    <Input
+                      id="ocr_satuan"
+                      required
+                      placeholder="kg / m3"
+                      className={!ocrForm.satuan ? "border-destructive" : undefined}
+                      value={ocrForm.satuan}
+                      onChange={(e) => setOcrForm((f) => ({ ...f, satuan: e.target.value }))}
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor="ocr_harga_satuan">
+                      Harga Satuan (Rp) {!ocrForm.harga_satuan && <span className="text-destructive">(perlu diisi manual)</span>}
+                    </Label>
+                    <Input
+                      id="ocr_harga_satuan"
+                      type="number"
+                      step="any"
+                      required
+                      className={!ocrForm.harga_satuan ? "border-destructive" : undefined}
+                      value={ocrForm.harga_satuan}
+                      onChange={(e) => setOcrForm((f) => ({ ...f, harga_satuan: Number(e.target.value) }))}
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor="ocr_tgl_masuk">
+                      Tanggal PO {!ocrForm.tgl_masuk && <span className="text-destructive">(perlu diisi manual)</span>}
+                    </Label>
+                    <Input
+                      id="ocr_tgl_masuk"
+                      type="date"
+                      required
+                      className={!ocrForm.tgl_masuk ? "border-destructive" : undefined}
+                      value={ocrForm.tgl_masuk ?? ""}
+                      onChange={(e) => setOcrForm((f) => ({ ...f, tgl_masuk: e.target.value || null }))}
+                    />
+                  </div>
+                </div>
+                <DialogFooter className="gap-2">
+                  <Button type="button" variant="ghost" onClick={resetOcrWizard}>
+                    Ulangi Ekstraksi
+                  </Button>
+                  <Button type="submit" disabled={ocrSubmitting}>
+                    {ocrSubmitting ? "Menyimpan..." : "Simpan PO"}
+                  </Button>
+                </DialogFooter>
+              </form>
+            )}
+          </DialogContent>
+        </Dialog>
       </div>
 
       <Card>
         <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-3">
             <CardTitle className="text-base">Daftar PO</CardTitle>
-            <BuFilterPills options={buOptions} value={buFilter} onChange={setBuFilter} />
+            <span className="rounded-md bg-primary/10 px-2.5 py-1 text-xs font-semibold text-primary">
+              Workspace: {selected}
+            </span>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            <Input
+              className="h-8 w-[150px] text-xs"
+              placeholder="Cari site..."
+              value={siteQuery}
+              onChange={(e) => setSiteQuery(e.target.value)}
+            />
             <Select value={statusFilter} onValueChange={setStatusFilter}>
               <SelectTrigger className="h-8 w-[140px] text-xs">
                 <SelectValue placeholder="Status" />
@@ -331,18 +623,19 @@ function POContent() {
                 <TableHead>Harga Satuan</TableHead>
                 <TableHead>Pemakaian</TableHead>
                 <TableHead>Status</TableHead>
+                <TableHead className="text-right">Aksi</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {loading ? (
                 <TableRow>
-                  <TableCell colSpan={7} className="text-center text-muted-foreground">
+                  <TableCell colSpan={8} className="text-center text-muted-foreground">
                     Memuat...
                   </TableCell>
                 </TableRow>
               ) : filteredPo.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={7} className="text-center text-muted-foreground">
+                  <TableCell colSpan={8} className="text-center text-muted-foreground">
                     Tidak ada data PO.
                   </TableCell>
                 </TableRow>
@@ -381,6 +674,27 @@ function POContent() {
                         <WarningBadge isWarning={po.is_warning} />
                       </div>
                     </TableCell>
+                    <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
+                      <div className="flex items-center justify-end gap-1.5">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleToggleStatus(po)}
+                        >
+                          {po.status === "aktif" ? "Nonaktifkan" : "Aktifkan"}
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          className="text-destructive hover:text-destructive"
+                          onClick={() => setHapusPo(po)}
+                        >
+                          Hapus
+                        </Button>
+                      </div>
+                    </TableCell>
                   </TableRow>
                 ))
               )}
@@ -388,6 +702,29 @@ function POContent() {
           </Table>
         </CardContent>
       </Card>
+
+      <Dialog open={hapusPo !== null} onOpenChange={(v) => { if (!v) setHapusPo(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Hapus PO?</DialogTitle>
+            <DialogDescription>
+              PO {hapusPo?.po_no} · {hapusPo?.kode} · site {hapusPo?.site ?? "-"}. PO dihapus dari database &amp; tracker. Kalau PO sudah dipakai invoice, penghapusan ditolak otomatis.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setHapusPo(null)}>
+              Batal
+            </Button>
+            <Button
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={deletingPo}
+              onClick={handleHapusPo}
+            >
+              {deletingPo ? "Menghapus..." : "Ya, hapus PO"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

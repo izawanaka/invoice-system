@@ -14,6 +14,7 @@ import {
   downloadPODokumen,
   listPO,
   listPOInvoices,
+  deletePODokumen,
   listPODokumen,
   uploadPODokumen,
 } from "@/lib/api";
@@ -39,6 +40,8 @@ function DokumenPOCard({ poNo, kode }: { poNo: string; kode: string }) {
   const [loading, setLoading] = React.useState(true);
   const [uploading, setUploading] = React.useState(false);
   const fileRef = React.useRef<HTMLInputElement | null>(null);
+  const [hapusId, setHapusId] = React.useState<number | null>(null);
+  const [deletingId, setDeletingId] = React.useState<number | null>(null);
 
   const muat = React.useCallback(() => {
     setLoading(true);
@@ -84,6 +87,20 @@ function DokumenPOCard({ poNo, kode }: { poNo: string; kode: string }) {
     }
   }
 
+  async function hapus(d: PODocOut) {
+    setDeletingId(d.id);
+    try {
+      await deletePODokumen(d.id);
+      toast.success("Scan PO dihapus. Kalau perlu, unggah scan yang benar.");
+      setHapusId(null);
+      muat();
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Gagal menghapus scan PO.");
+    } finally {
+      setDeletingId(null);
+    }
+  }
+
   return (
     <Card className="print:hidden">
       <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-3">
@@ -126,9 +143,36 @@ function DokumenPOCard({ poNo, kode }: { poNo: string; kode: string }) {
             {docs.map((d) => (
               <li key={d.id} className="flex items-center justify-between gap-2 text-sm">
                 <span className="truncate">{d.original_filename ?? `dokumen #${d.id}`}</span>
-                <Button variant="ghost" size="sm" className="gap-1.5" onClick={() => unduh(d)}>
-                  <Download className="h-4 w-4" /> Lihat
-                </Button>
+                {hapusId === d.id ? (
+                  <div className="flex shrink-0 items-center gap-1">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="text-destructive hover:text-destructive"
+                      disabled={deletingId === d.id}
+                      onClick={() => hapus(d)}
+                    >
+                      {deletingId === d.id ? "Menghapus..." : "Ya, hapus"}
+                    </Button>
+                    <Button variant="ghost" size="sm" onClick={() => setHapusId(null)}>
+                      Batal
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="flex shrink-0 items-center gap-1">
+                    <Button variant="ghost" size="sm" className="gap-1.5" onClick={() => unduh(d)}>
+                      <Download className="h-4 w-4" /> Lihat
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="text-destructive hover:text-destructive"
+                      onClick={() => setHapusId(d.id)}
+                    >
+                      Hapus
+                    </Button>
+                  </div>
+                )}
               </li>
             ))}
           </ul>

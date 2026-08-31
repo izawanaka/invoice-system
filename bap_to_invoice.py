@@ -4,7 +4,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db_helper
 import os
 import config
-import code_pajak   # ROUND_HALF_UP pajak (Vault #6)
 
 INPUT_FILE     = config.d("bap_input.json")
 PO_FILE        = config.d("po_tracker.json")
@@ -232,9 +231,9 @@ def update_excel_log(inv_no, site, no_bap, baris_po, inv_date):
                 if k in (7, 8):
                     c.number_format = "#,##0"
 
-            ws.cell(row=r, column=9).value  = '=IF(G%d="","",ROUND(G%d*H%d*11/12,0))' % (r, r, r)
+            ws.cell(row=r, column=9).value  = '=IF(G%d="","",G%d*H%d*11/12)' % (r, r, r)
             ws.cell(row=r, column=9).number_format = "#,##0"
-            ws.cell(row=r, column=10).value = '=IF(I%d="","",ROUND(I%d*12%%,0))' % (r, r)
+            ws.cell(row=r, column=10).value = '=IF(I%d="","",I%d*12%%)' % (r, r)
             ws.cell(row=r, column=10).number_format = "#,##0"
             ws.cell(row=r, column=11).value = '=IF(G%d="","",G%d*H%d+J%d)' % (r, r, r, r)
             ws.cell(row=r, column=11).number_format = "#,##0"
@@ -285,18 +284,26 @@ def main():
     no_bap   = data.get("no_bap","")
     bap_items = data.get("items", [])
     inv_date = data.get("inv_date","")
-    customer = data.get("customer","PT.Itci Hutani Manunggal")
-    cust_addr = data.get("cust_addr",[
-        "Jl. 1519 Simpang Empat Terunen Blok.000",
-        "RT.010. RW.000 Bumi Harapan, Sepaku Kab. Penajam Paser Utara",
-        "Kalimantan Timur 76184","01.609.260.3.725.000"])
     if not site or not qty_kg:
         print(json.dumps({"status":"error","message":"Site dan QTY wajib diisi"}))
         sys.exit(1)
-    po_list = get_po_list(site)
-    if not po_list:
+    po1, _po2 = get_po(site)
+    if not po1:
         print(json.dumps({"status":"error","message":f"Tidak ada PO aktif untuk site {site}"}))
         sys.exit(1)
+    # Ambil customer dari PO tracker (pola sama dgn bap_to_invoice_kks.py,
+    # 31 Jul 2026 -- owner: "desain DKP dan KKS itu 1 dan baku, yang berbeda
+    # hanya isinya saja, itupun admin dan owner yang isi" -- customer/alamat
+    # diisi admin/owner SEKALI saat PO didaftarkan (form Tambah PO / OCR PO),
+    # BUKAN diketik ulang tiap kali generate invoice. data.get("customer")
+    # tetap dihormati sbg override eksplisit kalau ada, demi kompatibilitas
+    # pemanggilan lama/manual.
+    customer = data.get("customer") or po1.get("customer","PT.Itci Hutani Manunggal")
+    cust_addr = data.get("cust_addr") or po1.get("cust_addr",[
+        "Jl. 1519 Simpang Empat Terunen Blok.000",
+        "RT.010. RW.000 Bumi Harapan, Sepaku Kab. Penajam Paser Utara",
+        "Kalimantan Timur 76184","01.609.260.3.725.000"])
+    po_list = get_po_list(site)
     inv_no, next_no = next_inv_no(site, inv_date)
 
     # Satu jalur untuk SEMUA kasus (1 BAP maupun banyak BAP): alokasi_po memecah
@@ -338,8 +345,8 @@ def main():
     with open(INV_NO_FILE,"w") as f:
         f.write(str(next_no).zfill(3))
     sub_total = sum(i[2]*i[3] for i in items)
-    dpp   = code_pajak.dpp_nilai_lain(sub_total)
-    vat   = code_pajak.ppn(dpp)
+    dpp   = sub_total*11/12
+    vat   = dpp*0.12
     grand = sub_total+vat
     safe  = inv_no.replace("/","_").replace(" ","_")
     pdf_path = os.path.join(OUTPUT_DIR, f"Inv_{safe}.pdf")

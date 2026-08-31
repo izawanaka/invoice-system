@@ -3,7 +3,7 @@
 import * as React from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { Plus, Building2, Pencil } from "lucide-react";
+import { Plus, Building2, Pencil, FileText, Upload, Download, Trash2 } from "lucide-react";
 
 import { RequireAuth } from "@/components/require-auth";
 import { AppShell } from "@/components/app-shell";
@@ -16,13 +16,19 @@ import {
   mitraPTDetail,
   renameMitraGroup,
   renameMitraPT,
+  listKontrak,
+  uploadKontrak,
+  deleteKontrak,
+  downloadKontrak,
 } from "@/lib/api";
-import type { MitraGroup, MitraPTDetail } from "@/lib/types";
+import type { MitraGroup, MitraPTDetail, KontrakOut } from "@/lib/types";
 import { formatQty, formatDate } from "@/lib/utils";
+import { useBadanUsaha } from "@/lib/badan-usaha-context";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -43,23 +49,244 @@ const TAHAP_LABEL: Record<string, string> = {
   terkirim: "Terkirim",
 };
 
+function KontrakDialog({ group, bu, onClose }: { group: MitraGroup | null; bu: string; onClose: () => void }) {
+  const [items, setItems] = React.useState<KontrakOut[]>([]);
+  const [loading, setLoading] = React.useState(false);
+  const [file, setFile] = React.useState<File | null>(null);
+  const [nomor, setNomor] = React.useState("");
+  const [judul, setJudul] = React.useState("");
+  const [tanggal, setTanggal] = React.useState("");
+  const [masa, setMasa] = React.useState("");
+  const [nilai, setNilai] = React.useState("");
+  const [catatan, setCatatan] = React.useState("");
+  const [saving, setSaving] = React.useState(false);
+  const [delId, setDelId] = React.useState<number | null>(null);
+  const fileRef = React.useRef<HTMLInputElement | null>(null);
+
+  const load = React.useCallback(() => {
+    if (!group) return;
+    setLoading(true);
+    listKontrak(group.id, bu)
+      .then(setItems)
+      .catch((err) => toast.error(err instanceof ApiError ? err.message : "Gagal memuat kontrak"))
+      .finally(() => setLoading(false));
+  }, [group, bu]);
+
+  React.useEffect(() => {
+    if (group) load();
+  }, [group, load]);
+
+  function resetForm() {
+    setFile(null);
+    setNomor("");
+    setJudul("");
+    setTanggal("");
+    setMasa("");
+    setNilai("");
+    setCatatan("");
+    if (fileRef.current) fileRef.current.value = "";
+  }
+
+  async function submitUpload(e: React.FormEvent) {
+    e.preventDefault();
+    if (!group) return;
+    if (!file) {
+      toast.error("Pilih berkas kontrak dulu.");
+      return;
+    }
+    setSaving(true);
+    try {
+      await uploadKontrak(group.id, file, {
+        badan_usaha_kode: bu,
+        nomor_kontrak: nomor.trim(),
+        judul: judul.trim(),
+        tanggal: tanggal || undefined,
+        masa_berlaku: masa.trim(),
+        nilai: nilai.trim(),
+        catatan: catatan.trim(),
+      });
+      toast.success("Kontrak diunggah. Ringkasan akan diisi setelah Claude membacanya.");
+      resetForm();
+      load();
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Gagal mengunggah kontrak");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function unduh(k: KontrakOut) {
+    try {
+      const blob = await downloadKontrak(k.id);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = k.original_filename || `kontrak_${k.id}`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Gagal mengunduh kontrak");
+    }
+  }
+
+  async function hapus(k: KontrakOut) {
+    try {
+      await deleteKontrak(k.id);
+      toast.success("Kontrak dihapus.");
+      setDelId(null);
+      load();
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Gagal menghapus kontrak");
+    }
+  }
+
+  return (
+    <Dialog open={group !== null} onOpenChange={(v) => { if (!v) { setDelId(null); onClose(); } }}>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>Kontrak &mdash; {group?.nama}</DialogTitle>
+          <DialogDescription>
+            Dokumen kontrak payung untuk Group ini. Workspace aktif: <b>{bu}</b>. Setelah berkas
+            diunggah, Claude membaca isinya lalu mengisi Ringkasan.
+          </DialogDescription>
+        </DialogHeader>
+
+        <form onSubmit={submitUpload} className="flex flex-col gap-3 rounded-md border border-border p-3">
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="kfile">Berkas kontrak (PDF/foto)</Label>
+            <Input
+              id="kfile"
+              type="file"
+              ref={fileRef}
+              accept=".pdf,image/*"
+              onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+            />
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="knomor">Nomor kontrak</Label>
+              <Input id="knomor" value={nomor} onChange={(e) => setNomor(e.target.value)} placeholder="mis. 001/KTR/2026" />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="kjudul">Judul / perihal</Label>
+              <Input id="kjudul" value={judul} onChange={(e) => setJudul(e.target.value)} />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="ktgl">Tanggal</Label>
+              <Input id="ktgl" type="date" value={tanggal} onChange={(e) => setTanggal(e.target.value)} />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="kmasa">Masa berlaku</Label>
+              <Input id="kmasa" value={masa} onChange={(e) => setMasa(e.target.value)} placeholder="mis. s/d 31 Des 2026" />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="knilai">Nilai (opsional)</Label>
+              <Input id="knilai" value={nilai} onChange={(e) => setNilai(e.target.value)} placeholder="mis. 1.500.000.000" />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="kcat">Catatan</Label>
+              <Input id="kcat" value={catatan} onChange={(e) => setCatatan(e.target.value)} />
+            </div>
+          </div>
+          <div className="flex justify-end">
+            <Button type="submit" disabled={saving} className="gap-1.5">
+              <Upload className="h-4 w-4" /> {saving ? "Mengunggah..." : "Unggah Kontrak"}
+            </Button>
+          </div>
+        </form>
+
+        <div className="flex max-h-[45vh] flex-col gap-2 overflow-y-auto">
+          {loading ? (
+            <p className="text-sm text-muted-foreground">Memuat...</p>
+          ) : items.length === 0 ? (
+            <p className="text-sm text-muted-foreground">Belum ada kontrak untuk workspace {bu}.</p>
+          ) : (
+            items.map((k) => (
+              <div key={k.id} className="rounded-md border border-border p-3">
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div className="flex flex-col">
+                    <span className="text-sm font-semibold">
+                      {k.nomor_kontrak || k.judul || k.original_filename || `Kontrak #${k.id}`}
+                      {k.badan_usaha_kode ? (
+                        <Badge variant="outline" className="ml-2 text-[10px]">{k.badan_usaha_kode}</Badge>
+                      ) : null}
+                    </span>
+                    <span className="text-xs text-muted-foreground">
+                      {k.judul && k.nomor_kontrak ? `${k.judul} · ` : ""}
+                      {k.tanggal ? `Tgl ${formatDate(k.tanggal)}` : ""}
+                      {k.masa_berlaku ? ` · ${k.masa_berlaku}` : ""}
+                      {k.nilai != null ? ` · Rp ${k.nilai.toLocaleString("id-ID")}` : ""}
+                    </span>
+                    {k.catatan ? <span className="text-xs text-muted-foreground">{k.catatan}</span> : null}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {k.punya_file ? (
+                      <button
+                        type="button"
+                        onClick={() => unduh(k)}
+                        title="Unduh berkas kontrak"
+                        className="text-muted-foreground hover:text-foreground"
+                      >
+                        <Download className="h-4 w-4" />
+                      </button>
+                    ) : null}
+                    {delId === k.id ? (
+                      <span className="flex items-center gap-1 text-xs">
+                        <button type="button" onClick={() => hapus(k)} className="font-medium text-destructive">Hapus?</button>
+                        <button type="button" onClick={() => setDelId(null)} className="text-muted-foreground">batal</button>
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setDelId(k.id)}
+                        title="Hapus kontrak"
+                        className="text-muted-foreground hover:text-destructive"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <div className="mt-2 rounded bg-muted/40 p-2 text-xs">
+                  <span className="font-medium">Ringkasan: </span>
+                  {k.ringkasan ? (
+                    <span className="whitespace-pre-wrap">{k.ringkasan}</span>
+                  ) : (
+                    <span className="text-muted-foreground">Belum ada &mdash; akan diisi setelah Claude membaca kontrak.</span>
+                  )}
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function MitraContent() {
   const router = useRouter();
+  const { selected } = useBadanUsaha();
   const [tree, setTree] = React.useState<MitraGroup[]>([]);
   const [loadingTree, setLoadingTree] = React.useState(true);
   const [selectedPt, setSelectedPt] = React.useState<number | null>(null);
   const [detail, setDetail] = React.useState<MitraPTDetail | null>(null);
   const [loadingDetail, setLoadingDetail] = React.useState(false);
+  const [kontrakGroup, setKontrakGroup] = React.useState<MitraGroup | null>(null);
 
   const [groupOpen, setGroupOpen] = React.useState(false);
   const [groupNama, setGroupNama] = React.useState("");
+  const [groupAlamat, setGroupAlamat] = React.useState("");
+  const [groupNpwp, setGroupNpwp] = React.useState("");
   const [ptOpen, setPtOpen] = React.useState(false);
   const [ptNama, setPtNama] = React.useState("");
-  const [ptSite, setPtSite] = React.useState("");
   const [ptGroupId, setPtGroupId] = React.useState<string>("");
-  const [renameTarget, setRenameTarget] = React.useState<{ kind: "group" | "pt"; id: number; nama: string; site?: string | null } | null>(null);
+  const [renameTarget, setRenameTarget] = React.useState<{ kind: "group" | "pt"; id: number; nama: string } | null>(null);
   const [renameNama, setRenameNama] = React.useState("");
-  const [renameSite, setRenameSite] = React.useState("");
+  const [renameAlamat, setRenameAlamat] = React.useState("");
+  const [renameNpwp, setRenameNpwp] = React.useState("");
 
   const loadTree = React.useCallback(() => {
     setLoadingTree(true);
@@ -92,10 +319,12 @@ function MitraContent() {
     e.preventDefault();
     if (!groupNama.trim()) return;
     try {
-      await createMitraGroup(groupNama.trim());
+      await createMitraGroup(groupNama.trim(), groupAlamat.trim(), groupNpwp.trim());
       toast.success("Group ditambahkan.");
       setGroupOpen(false);
       setGroupNama("");
+      setGroupAlamat("");
+      setGroupNpwp("");
       loadTree();
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Gagal menambah group");
@@ -104,16 +333,15 @@ function MitraContent() {
 
   async function submitPt(e: React.FormEvent) {
     e.preventDefault();
-    if (!ptNama.trim() || !ptGroupId || !ptSite.trim()) {
-      toast.error("Pilih group, isi nama PT, dan isi site.");
+    if (!ptNama.trim() || !ptGroupId) {
+      toast.error("Pilih group dan isi nama PT.");
       return;
     }
     try {
-      await createMitraPT(Number(ptGroupId), ptNama.trim(), ptSite.trim());
+      await createMitraPT(Number(ptGroupId), ptNama.trim());
       toast.success("PT ditambahkan.");
       setPtOpen(false);
       setPtNama("");
-      setPtSite("");
       loadTree();
     } catch (err) {
       toast.error(err instanceof ApiError ? err.message : "Gagal menambah PT");
@@ -123,21 +351,18 @@ function MitraContent() {
   async function submitRename(e: React.FormEvent) {
     e.preventDefault();
     if (!renameTarget || !renameNama.trim()) return;
-    if (renameTarget.kind === "pt" && !renameSite.trim()) {
-      toast.error("Isi site PT.");
-      return;
-    }
     try {
       if (renameTarget.kind === "group") {
-        await renameMitraGroup(renameTarget.id, renameNama.trim());
+        await renameMitraGroup(renameTarget.id, renameNama.trim(), renameAlamat.trim(), renameNpwp.trim());
       } else {
-        await renameMitraPT(renameTarget.id, renameNama.trim(), renameSite.trim());
+        await renameMitraPT(renameTarget.id, renameNama.trim());
       }
-      toast.success("Nama diperbarui.");
+      toast.success("Data diperbarui.");
       const t = renameTarget;
       setRenameTarget(null);
       setRenameNama("");
-      setRenameSite("");
+      setRenameAlamat("");
+      setRenameNpwp("");
       loadTree();
       if (t.kind === "pt" && selectedPt === t.id) loadDetail(t.id);
     } catch (err) {
@@ -151,8 +376,8 @@ function MitraContent() {
         <div>
           <h1 className="text-xl font-semibold">Mitra</h1>
           <p className="text-sm text-muted-foreground">
-            Group &rarr; PT &rarr; PO aktif &rarr; Invoice. PO aktif muncul otomatis
-            berdasarkan site PT; invoice mengikuti PO-nya.
+            Group &rarr; PT &rarr; PO aktif &rarr; Invoice. PT dianggap identik dengan
+            site &mdash; PO aktif muncul otomatis kalau nama site PO ada di dalam nama PT.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -171,6 +396,14 @@ function MitraContent() {
                 <div className="flex flex-col gap-1.5">
                   <Label htmlFor="gnama">Nama Group</Label>
                   <Input id="gnama" value={groupNama} onChange={(e) => setGroupNama(e.target.value)} required />
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="galamat">Alamat (opsional)</Label>
+                  <Textarea id="galamat" value={groupAlamat} onChange={(e) => setGroupAlamat(e.target.value)} rows={2} />
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="gnpwp">No. NPWP (opsional)</Label>
+                  <Input id="gnpwp" value={groupNpwp} onChange={(e) => setGroupNpwp(e.target.value)} placeholder="00.000.000.0-000.000" />
                 </div>
                 <DialogFooter>
                   <Button type="submit">Simpan</Button>
@@ -205,11 +438,7 @@ function MitraContent() {
                 </div>
                 <div className="flex flex-col gap-1.5">
                   <Label htmlFor="ptnama">Nama PT</Label>
-                  <Input id="ptnama" value={ptNama} onChange={(e) => setPtNama(e.target.value)} required />
-                </div>
-                <div className="flex flex-col gap-1.5">
-                  <Label htmlFor="ptsite">Site</Label>
-                  <Input id="ptsite" value={ptSite} onChange={(e) => setPtSite(e.target.value)} placeholder="mis. Sesayap" required />
+                  <Input id="ptnama" value={ptNama} onChange={(e) => setPtNama(e.target.value)} placeholder="mis. Sesayap (tulis nama yang memuat nama site)" required />
                 </div>
                 <DialogFooter>
                   <Button type="submit">Simpan</Button>
@@ -237,13 +466,27 @@ function MitraContent() {
                     <Building2 className="h-4 w-4 text-muted-foreground" /> {g.nama}
                     <button
                       type="button"
-                      onClick={() => { setRenameTarget({ kind: "group", id: g.id, nama: g.nama }); setRenameNama(g.nama); }}
+                      onClick={() => { setRenameTarget({ kind: "group", id: g.id, nama: g.nama }); setRenameNama(g.nama); setRenameAlamat(g.alamat ?? ""); setRenameNpwp(g.npwp ?? ""); }}
                       className="ml-1 text-muted-foreground hover:text-foreground"
                       title="Ubah nama group"
                     >
                       <Pencil className="h-3 w-3" />
                     </button>
+                    <button
+                      type="button"
+                      onClick={() => setKontrakGroup(g)}
+                      className="text-muted-foreground hover:text-foreground"
+                      title="Kelola kontrak group"
+                    >
+                      <FileText className="h-3 w-3" />
+                    </button>
                   </div>
+                  {(g.alamat || g.npwp) && (
+                    <div className="pl-5 text-[11px] leading-tight text-muted-foreground">
+                      {g.alamat ? <p>{g.alamat}</p> : null}
+                      {g.npwp ? <p>NPWP: {g.npwp}</p> : null}
+                    </div>
+                  )}
                   <div className="flex flex-col gap-0.5 pl-5">
                     {g.pt.length === 0 ? (
                       <span className="text-xs text-muted-foreground">(belum ada PT)</span>
@@ -282,7 +525,7 @@ function MitraContent() {
               {detail ? (
                 <button
                   type="button"
-                  onClick={() => { setRenameTarget({ kind: "pt", id: detail.pt.id, nama: detail.pt.nama, site: detail.pt.site }); setRenameNama(detail.pt.nama); setRenameSite(detail.pt.site ?? ""); }}
+                  onClick={() => { setRenameTarget({ kind: "pt", id: detail.pt.id, nama: detail.pt.nama }); setRenameNama(detail.pt.nama); }}
                   className="ml-2 align-middle text-muted-foreground hover:text-foreground"
                   title="Ubah nama PT"
                 >
@@ -356,22 +599,32 @@ function MitraContent() {
         </Card>
       </div>
 
-      <Dialog open={renameTarget !== null} onOpenChange={(v) => { if (!v) { setRenameTarget(null); setRenameNama(""); } }}>
+      <KontrakDialog group={kontrakGroup} bu={selected} onClose={() => setKontrakGroup(null)} />
+
+      <Dialog open={renameTarget !== null} onOpenChange={(v) => { if (!v) { setRenameTarget(null); setRenameNama(""); setRenameAlamat(""); setRenameNpwp(""); } }}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Ubah Nama {renameTarget?.kind === "group" ? "Group" : "PT"}</DialogTitle>
-            <DialogDescription>Perbaiki nama kalau ada salah input.</DialogDescription>
+            <DialogTitle>Ubah {renameTarget?.kind === "group" ? "Group" : "PT"}</DialogTitle>
+            <DialogDescription>
+              {renameTarget?.kind === "group" ? "Perbaiki nama, alamat, dan NPWP kalau ada salah input." : "Perbaiki nama kalau ada salah input."}
+            </DialogDescription>
           </DialogHeader>
           <form onSubmit={submitRename} className="flex flex-col gap-3">
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="rnama">Nama baru</Label>
               <Input id="rnama" value={renameNama} onChange={(e) => setRenameNama(e.target.value)} required />
             </div>
-            {renameTarget?.kind === "pt" ? (
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor="rsite">Site</Label>
-                <Input id="rsite" value={renameSite} onChange={(e) => setRenameSite(e.target.value)} required />
-              </div>
+            {renameTarget?.kind === "group" ? (
+              <>
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="ralamat">Alamat (opsional)</Label>
+                  <Textarea id="ralamat" value={renameAlamat} onChange={(e) => setRenameAlamat(e.target.value)} rows={2} />
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="rnpwp">No. NPWP (opsional)</Label>
+                  <Input id="rnpwp" value={renameNpwp} onChange={(e) => setRenameNpwp(e.target.value)} placeholder="00.000.000.0-000.000" />
+                </div>
+              </>
             ) : null}
             <DialogFooter>
               <Button type="submit">Simpan</Button>

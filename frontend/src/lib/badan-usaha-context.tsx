@@ -2,22 +2,24 @@
 
 import * as React from "react";
 
-import { listBadanUsaha } from "./api";
+import { listBadanUsaha, getToken } from "./api";
+import { useAuth } from "./auth-context";
 import type { BadanUsahaOut } from "./types";
 
 const STORAGE_KEY = "invoice_app_bu_filter";
+const CHOSEN_KEY = "invoice_app_bu_chosen";
 const DEFAULT_KODE = "DKP";
 
-// Keputusan owner (28 Jul 2026): dashboard ini KHUSUS ranah DKP & KKS —
-// GBU/TBS/SSM disembunyikan dari seluruh UI (backend tetap generik 5 entitas,
-// pembatasan hanya di tampilan; lihat 03_progress_log.md §16).
 const DASHBOARD_BU = ["DKP", "KKS"];
 
 interface BadanUsahaState {
   list: BadanUsahaOut[];
   loading: boolean;
-  selected: string; // kode badan usaha aktif -- SELALU satu entitas, tidak pernah campur
+  selected: string;
+  chosen: boolean;
+  hydrated: boolean;
   setSelected: (kode: string) => void;
+  resetWorkspace: () => void;
   refresh: () => void;
 }
 
@@ -27,8 +29,18 @@ export function BadanUsahaProvider({ children }: { children: React.ReactNode }) 
   const [list, setList] = React.useState<BadanUsahaOut[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [selected, setSelectedState] = React.useState<string>(DEFAULT_KODE);
+  const [chosen, setChosen] = React.useState(false);
+  const [hydrated, setHydrated] = React.useState(false);
+  const { user, loading: authLoading } = useAuth();
 
   const load = React.useCallback(() => {
+    // Tanpa token (mis. masih di halaman /login) endpoint /badan-usaha PASTI 401.
+    // Jangan dipanggil; effect di bawah akan memuat ulang begitu sesi siap.
+    if (!getToken()) {
+      setList([]);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     listBadanUsaha()
       .then((all) => setList(all.filter((bu) => DASHBOARD_BU.includes(bu.kode))))
@@ -37,21 +49,44 @@ export function BadanUsahaProvider({ children }: { children: React.ReactNode }) 
   }, []);
 
   React.useEffect(() => {
-    // Permintaan owner (28 Jul): data per badan usaha DIPISAH, tidak ada mode
-    // "semua campur". Nilai lama "ALL" dari localStorage dikoreksi ke default.
-    const saved = typeof window !== "undefined" ? window.localStorage.getItem(STORAGE_KEY) : null;
-    if (saved && DASHBOARD_BU.includes(saved)) setSelectedState(saved);
-    load();
-  }, [load]);
+    if (typeof window !== "undefined") {
+      const saved = window.localStorage.getItem(STORAGE_KEY);
+      if (saved && DASHBOARD_BU.includes(saved)) setSelectedState(saved);
+      // "chosen" per-sesi: bertahan saat refresh (sessionStorage), hilang saat
+      // tab ditutup atau Log out. Login berikutnya mulai dari kondisi awal.
+      if (window.sessionStorage.getItem(CHOSEN_KEY) === "1") setChosen(true);
+    }
+    setHydrated(true);
+  }, []);
+
+  // BUGFIX 18 Agu 2026: dulu daftar badan usaha ditarik SEKALI saat provider
+  // mount. Provider ini ada di root layout, jadi mount terjadi di halaman
+  // /login KETIKA TOKEN BELUM ADA -> 401 -> list kosong; navigasi setelah
+  // login bersifat client-side (provider tidak remount) sehingga list tetap
+  // kosong sepanjang sesi. Akibatnya dropdown "Badan Usaha" di dialog Tambah
+  // PO / Tambah PO dari Foto-Scan tidak bisa diisi sampai halaman di-reload
+  // manual. Kini list dimuat ulang tiap status auth berubah (mis. login sukses).
+  React.useEffect(() => {
+    if (!authLoading) load();
+  }, [authLoading, user, load]);
 
   const setSelected = React.useCallback((kode: string) => {
     setSelectedState(kode);
-    if (typeof window !== "undefined") window.localStorage.setItem(STORAGE_KEY, kode);
+    setChosen(true);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(STORAGE_KEY, kode);
+      window.sessionStorage.setItem(CHOSEN_KEY, "1");
+    }
+  }, []);
+
+  const resetWorkspace = React.useCallback(() => {
+    setChosen(false);
+    if (typeof window !== "undefined") window.sessionStorage.removeItem(CHOSEN_KEY);
   }, []);
 
   const value = React.useMemo(
-    () => ({ list, loading, selected, setSelected, refresh: load }),
-    [list, loading, selected, setSelected, load],
+    () => ({ list, loading, selected, chosen, hydrated, setSelected, resetWorkspace, refresh: load }),
+    [list, loading, selected, chosen, hydrated, setSelected, resetWorkspace, load],
   );
 
   return <BadanUsahaContext.Provider value={value}>{children}</BadanUsahaContext.Provider>;

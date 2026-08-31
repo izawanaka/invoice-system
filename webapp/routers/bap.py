@@ -18,7 +18,8 @@ router = APIRouter(prefix="/bap", tags=["bap"])
 _NOTA_SELECT = (
     "SELECT n.id, n.badan_usaha_kode, n.jenis, n.no_bap, n.site, n.tanggal, "
     "n.qty_kg, n.qty_m3, n.confidence, n.original_filename, n.downloaded_at, "
-    "n.created_at, n.sumber, n.mitra_pt_id, pt.nama, n.deteksi_status "
+    "n.created_at, n.sumber, n.mitra_pt_id, pt.nama, n.deteksi_status, "
+    "n.dipakai_invoice "
     "FROM app_bap_nota n LEFT JOIN app_mitra_pt pt ON pt.id = n.mitra_pt_id"
 )
 
@@ -35,6 +36,7 @@ def _nota_row(r) -> schemas.BAPNotaOut:
         qty_m3=float(r[7]) if r[7] is not None else None,
         confidence=r[8], original_filename=r[9], downloaded_at=r[10], created_at=r[11],
         sumber=r[12], mitra_pt_id=r[13], mitra_pt_nama=r[14], deteksi_status=r[15],
+        dipakai_invoice=r[16],
     )
 
 
@@ -114,6 +116,99 @@ async def upload_bap_nota(
 
     nama = file.filename or "unggahan.bin"
     ocr = _ocr_berkas(nama, data)
+
+    # 19 Agu 2026 (revisi): ocr_doc.bagian_dari_berkas() merender PDF halaman 1 DAN 2
+    # (pdftoppm -l 2) lalu mengirim KEDUA gambar dalam satu permintaan, sementara PROMPT
+    # meminta SATU objek JSON. Kontraknya ambigu -> model kadang membalas array.
+    # Dua kemungkinan yang HARUS dibedakan, bukan ditolak semua:
+    #   (a) satu BAP yang panjangnya >1 halaman  -> gabungkan jadi satu dict
+    #   (b) beberapa BAP BERBEDA dalam satu berkas -> tolak, jangan pernah menebak
+    #       (mengambil elemen pertama = BAP kedua hilang diam-diam & PO terpotong kurang)
+    if isinstance(ocr, list):
+        entri = [e for e in ocr if isinstance(e, dict)]
+        nomor = []
+        for e in entri:
+            n = (e.get("no_bap") or "").strip()
+            if n and n not in nomor:
+                nomor.append(n)
+
+        if len(nomor) > 1:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Berkas ini berisi {len(nomor)} BAP dengan nomor berbeda "
+                    f"({', '.join(nomor)}). Sistem menerima satu BAP per berkas. "
+                    f"Pecah jadi {len(nomor)} file, unggah satu per satu, lalu centang "
+                    "semuanya saat menerbitkan invoice -- hasilnya tetap satu invoice."
+                ),
+            )
+
+        # <=1 nomor unik -> halaman lanjutan dari BAP yang sama. Gabungkan.
+        PENTING = ("no_bap", "tanggal", "qty_kg", "qty_m3", "site")
+
+        def _kosong(v):
+            """Halaman kosong/lanjutan sering dibaca model sebagai 0 atau "" --
+            itu BUKAN informasi, jadi tidak boleh dihitung sebagai nilai yang
+            bentrok. qty_kg=0 pada BAP KKS (satuan m3) juga berarti 'tidak berlaku'.
+            """
+            if v is None:
+                return True
+            if isinstance(v, bool):
+                return False
+            if isinstance(v, str):
+                return v.strip() in ("", "0", "-")
+            if isinstance(v, (int, float)):
+                return v == 0
+            if isinstance(v, (list, dict)):
+                return len(v) == 0
+            return False
+
+        gabung = {}
+        for e in entri:
+            for k, v in e.items():
+                if _kosong(v):
+                    continue
+                if k not in gabung:
+                    gabung[k] = v
+                elif gabung[k] != v and k in PENTING:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            f"Halaman-halaman berkas ini memberi nilai berbeda untuk "
+                            f"'{k}' ({gabung[k]} vs {v}), jadi sistem tidak bisa memastikan "
+                            "mana yang benar. Unggah halaman BAP-nya saja sebagai satu "
+                            "berkas, atau periksa apakah berkas ini memuat lebih dari satu BAP."
+                        ),
+                    )
+        ocr = gabung or {"jenis": "LAIN", "confidence": "low"}
+
+    elif not isinstance(ocr, dict):
+        ocr = {"jenis": "LAIN", "confidence": "low"}
+
+    # Fase 1: tolak BAP dgn nomor yang sama persis kalau sudah pernah tercatat
+    # (server-side -- pengecekan client-side di wizard bisa dilewati dgn
+    # panggilan API langsung/UI lain). Dicek server SEBELUM diarsipkan supaya
+    # tidak ada baris app_bap_nota duplikat yang keburu tersimpan.
+    no_bap_baca = (ocr.get("no_bap") or "").strip()
+    if no_bap_baca:
+        cur_dup = conn.cursor()
+        cur_dup.execute(
+            "SELECT id, original_filename, created_at FROM app_bap_nota "
+            "WHERE no_bap = %s ORDER BY id DESC LIMIT 1",
+            (no_bap_baca,),
+        )
+        dup = cur_dup.fetchone()
+        if dup is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"BAP nomor {no_bap_baca} sudah pernah diunggah sebelumnya "
+                    f"(arsip id={dup[0]}, berkas '{dup[1]}', pada {dup[2]}). "
+                    f"Kalau ini memang pengganti, hapus dulu arsip lama di menu BAP, "
+                    f"atau periksa apakah nomor BAP terbaca keliru."
+                ),
+            )
+
     row = bap_arsip.daftarkan(nama, data, ocr, sumber="web",
                               badan_usaha_kode=badan_usaha_kode,
                               uploaded_by=user.id, conn=conn)
@@ -126,16 +221,24 @@ async def upload_bap_nota(
 @router.get("/nota", response_model=List[schemas.BAPNotaOut])
 def list_bap_nota(
     include_downloaded: bool = Query(default=False),
+    belum_invoice: bool = Query(default=False),
     badan_usaha_kode: Optional[str] = Query(default=None),
     conn=Depends(get_db),
     user: security.CurrentUser = Depends(security.get_current_user),
 ):
     """Default: HANYA yang belum diunduh (permintaan owner: begitu diunduh, nota
-    hilang dari daftar -- arsip tetap ada, set include_downloaded=true utk lihat)."""
+    hilang dari daftar -- arsip tetap ada, set include_downloaded=true utk lihat).
+    belum_invoice=true (31 Jul 2026): filter tambahan independen dari downloaded_at --
+    HANYA nota yang dipakai_invoice IS NULL (belum pernah dipakai generate invoice).
+    Dipakai kartu 'BAP Belum Diterbitkan Invoice' di /bap supaya BAP yang sudah
+    terunggah tetap kelihatan lintas navigasi halaman (akar perbaikan bug 'unggah
+    ulang ditolak')."""
     sql = _NOTA_SELECT + " WHERE 1=1"
     params = []
     if not include_downloaded:
         sql += " AND n.downloaded_at IS NULL"
+    if belum_invoice:
+        sql += " AND n.dipakai_invoice IS NULL"
     if badan_usaha_kode:
         sql += " AND n.badan_usaha_kode = %s"
         params.append(badan_usaha_kode.upper())
@@ -194,3 +297,30 @@ def download_bap_nota(
         raise HTTPException(status_code=410, detail="File nota tidak ada lagi di server")
     nama = f"nota_cetak_{(no_bap or 'bap').replace('/', '_')}.pdf"
     return FileResponse(nota_path, media_type="application/pdf", filename=nama)
+
+
+@router.delete("/nota/{nota_id}")
+def hapus_bap_nota(
+    nota_id: int,
+    conn=Depends(get_db),
+    user: security.CurrentUser = Depends(security.get_current_user),
+):
+    """Hapus arsip BAP nota yang SALAH diunggah (record DB + file nota cetak).
+    Dipakai tombol 'Hapus' di Arsip BAP pada wizard Terbit Invoice. TIDAK
+    menyentuh invoice/PO -- hanya membuang arsip nota yang keliru."""
+    cur = conn.cursor()
+    cur.execute("SELECT nota_pdf_path, no_bap FROM app_bap_nota WHERE id = %s", (nota_id,))
+    row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Nota BAP tidak ditemukan")
+    nota_path, no_bap = row
+    cur.execute("DELETE FROM app_bap_nota WHERE id = %s", (nota_id,))
+    log_audit(conn, user.id, "hapus_bap_nota", "app_bap_nota", nota_id, {"no_bap": no_bap})
+    conn.commit()
+    try:
+        jp = bap_arsip.jalur(nota_path) if nota_path else None
+        if jp and os.path.exists(jp):
+            os.remove(jp)
+    except Exception:
+        pass
+    return {"deleted": nota_id, "no_bap": no_bap}
