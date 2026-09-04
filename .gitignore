@@ -42,3 +42,5 @@ graphify-out/
 bap_uploads/
 invoices_export.json
 apply_fix_pajak.sh
+.google_oauth.json
+backups/
