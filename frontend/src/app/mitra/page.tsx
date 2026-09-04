@@ -7,7 +7,7 @@ import { Plus, Building2, Pencil, FileText, Upload, Download, Trash2 } from "luc
 
 import { RequireAuth } from "@/components/require-auth";
 import { AppShell } from "@/components/app-shell";
-import { isUnauthorized } from "@/lib/auth-context";
+import { isUnauthorized, useAuth } from "@/lib/auth-context";
 import {
   ApiError,
   mitraTree,
@@ -267,6 +267,10 @@ function KontrakDialog({ group, bu, onClose }: { group: MitraGroup | null; bu: s
 }
 
 function MitraContent() {
+  // Peran "viewer" (Pengamat, 4 Sep 2026): hanya melihat & membaca.
+  const { user } = useAuth();
+  const isViewer = user?.role === "viewer";
+
   const router = useRouter();
   const { selected } = useBadanUsaha();
   const [tree, setTree] = React.useState<MitraGroup[]>([]);
@@ -383,7 +387,7 @@ function MitraContent() {
         <div className="flex items-center gap-2">
           <Dialog open={groupOpen} onOpenChange={setGroupOpen}>
             <DialogTrigger asChild>
-              <Button variant="outline" className="gap-1.5">
+              <Button variant="outline" className="gap-1.5" disabled={isViewer}>
                 <Plus className="h-4 w-4" /> Group
               </Button>
             </DialogTrigger>
@@ -413,7 +417,7 @@ function MitraContent() {
           </Dialog>
           <Dialog open={ptOpen} onOpenChange={setPtOpen}>
             <DialogTrigger asChild>
-              <Button className="gap-1.5" disabled={tree.length === 0}>
+              <Button className="gap-1.5" disabled={tree.length === 0 || isViewer}>
                 <Plus className="h-4 w-4" /> PT
               </Button>
             </DialogTrigger>

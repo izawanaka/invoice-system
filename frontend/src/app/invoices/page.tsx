@@ -93,6 +93,10 @@ function PaymentDialog({
   onOpenChange: (v: boolean) => void;
   onUpdated: () => void;
 }) {
+  // Pengamat boleh MELIHAT riwayat cicilan (keputusan owner 4 Sep 2026),
+  // tapi tidak boleh mencatat/menghapus/melunaskan.
+  const { user } = useAuth();
+  const isViewer = user?.role === "viewer";
   const [ringkas, setRingkas] = React.useState<PembayaranRingkas | null>(null);
   const [loading, setLoading] = React.useState(false);
   const [nominal, setNominal] = React.useState("");
@@ -192,12 +196,14 @@ function PaymentDialog({
                   <div key={it.id} className="flex items-center justify-between rounded-md border px-2 py-1 text-sm">
                     <span className="text-muted-foreground">{it.tgl_bayar ?? "-"}</span>
                     <span className="font-medium">{fmt(it.nominal)}</span>
-                    <Button variant="ghost" size="sm" disabled={busy} onClick={() => hapusCicilan(it)}>Hapus</Button>
+                    {!isViewer ? (
+                      <Button variant="ghost" size="sm" disabled={busy} onClick={() => hapusCicilan(it)}>Hapus</Button>
+                    ) : null}
                   </div>
                 ))}
               </div>
             ) : null}
-            {ringkas.sisa > 0 ? (
+            {ringkas.sisa > 0 && !isViewer ? (
               <div className="flex flex-col gap-2 border-t pt-3">
                 <div className="flex flex-col gap-1.5">
                   <Label htmlFor="tgl_bayar">Tanggal Bayar</Label>
@@ -420,7 +426,10 @@ function InvoicesContent() {
   // invoice. Backend sudah mengirim status/tgl_bayar/outstanding = null utk staf
   // (routers/invoices.py), jadi ini murni supaya tampilannya tidak menyisakan
   // kolom kosong yang membingungkan -- BUKAN satu-satunya lapisan pengaman.
-  const bolehLihatPelunasan = user?.role === "owner";
+  const bolehLihatPelunasan = user?.role === "owner" || user?.role === "viewer";
+  // Pengamat: boleh MELIHAT (termasuk pelunasan), tidak boleh menulis/mengunduh.
+  // Server sudah menolak; ini supaya tidak ada tombol mati yang membingungkan.
+  const isViewer = user?.role === "viewer";
   const router = useRouter();
   const [invoiceList, setInvoiceList] = React.useState<InvoiceOut[]>([]);
   const [loading, setLoading] = React.useState(true);
@@ -718,14 +727,16 @@ function InvoicesContent() {
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
-                          <DropdownMenuItem
-                            onClick={() =>
-                              router.push(`/invoices/${encodeURIComponent(inv.no_invoice)}/cetak`)
-                            }
-                            className="gap-2"
-                          >
-                            <Printer className="h-4 w-4" /> Cetak Paket (Invoice+PO+FP+BAP)
-                          </DropdownMenuItem>
+                          {!isViewer ? (
+                            <DropdownMenuItem
+                              onClick={() =>
+                                router.push(`/invoices/${encodeURIComponent(inv.no_invoice)}/cetak`)
+                              }
+                              className="gap-2"
+                            >
+                              <Printer className="h-4 w-4" /> Cetak Paket (Invoice+PO+FP+BAP)
+                            </DropdownMenuItem>
+                          ) : null}
                           {bolehLihatPelunasan ? (
                             <DropdownMenuItem
                               onClick={() => setPaymentTarget(inv)}
@@ -734,27 +745,33 @@ function InvoicesContent() {
                               <CheckCircle2 className="h-4 w-4" /> Kelola Pembayaran
                             </DropdownMenuItem>
                           ) : null}
-                          <DropdownMenuItem onClick={() => setFakturTarget(inv)} className="gap-2">
-                            <Upload className="h-4 w-4" /> Unggah Faktur Pajak
-                          </DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => setResiTarget(inv)} className="gap-2">
-                            <Truck className="h-4 w-4" /> Upload Bukti Resi (Terkirim)
-                          </DropdownMenuItem>
+                          {!isViewer ? (
+                            <>
+                              <DropdownMenuItem onClick={() => setFakturTarget(inv)} className="gap-2">
+                                <Upload className="h-4 w-4" /> Unggah Faktur Pajak
+                              </DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => setResiTarget(inv)} className="gap-2">
+                                <Truck className="h-4 w-4" /> Upload Bukti Resi (Terkirim)
+                              </DropdownMenuItem>
+                            </>
+                          ) : null}
                           <DropdownMenuItem onClick={() => setCekTarget(inv)} className="gap-2">
                             <FileText className="h-4 w-4" /> Cek Dokumen (Paperless)
                           </DropdownMenuItem>
-                          {inv.tahap_dok === "terkirim" ? (
+                          {inv.tahap_dok === "terkirim" && !isViewer ? (
                             <DropdownMenuItem onClick={() => handleUnduhResi(inv)} className="gap-2">
                               <Download className="h-4 w-4" /> Unduh Bukti Resi
                             </DropdownMenuItem>
                           ) : null}
-                          <DropdownMenuItem
-                            onClick={() => setBatalTarget(inv)}
-                            className="gap-2 text-destructive focus:text-destructive"
-                            // BatalInvoiceRekapMenuItem marker (jangan dihapus, penanda idempoten patch)
-                          >
-                            <Ban className="h-4 w-4" /> Batal Invoice
-                          </DropdownMenuItem>
+                          {!isViewer ? (
+                            <DropdownMenuItem
+                              onClick={() => setBatalTarget(inv)}
+                              className="gap-2 text-destructive focus:text-destructive"
+                              // BatalInvoiceRekapMenuItem marker (jangan dihapus, penanda idempoten patch)
+                            >
+                              <Ban className="h-4 w-4" /> Batal Invoice
+                            </DropdownMenuItem>
+                          ) : null}
                         </DropdownMenuContent>
                       </DropdownMenu>
                     </TableCell>
@@ -787,9 +804,11 @@ function InvoicesContent() {
             <Button variant="outline" size="sm" onClick={() => setDipilih({})}>
               Kosongkan
             </Button>
-            <Button size="sm" onClick={() => setLunaskanOpen(true)} disabled={totalTerpilih.sisa <= 0}>
-              Lunaskan Terpilih
-            </Button>
+            {!isViewer ? (
+              <Button size="sm" onClick={() => setLunaskanOpen(true)} disabled={totalTerpilih.sisa <= 0}>
+                Lunaskan Terpilih
+              </Button>
+            ) : null}
           </div>
         </div>
       ) : null}
@@ -882,6 +901,9 @@ function CekDokumenDialog({
   open: boolean;
   onOpenChange: (v: boolean) => void;
 }) {
+  // Pengamat boleh melihat DAFTAR dokumen terarsip, tidak boleh mengunduhnya.
+  const { user } = useAuth();
+  const isViewer = user?.role === "viewer";
   const [loading, setLoading] = React.useState(false);
   const [items, setItems] = React.useState<DokumenItem[]>([]);
   const [aktif, setAktif] = React.useState(true);
@@ -952,6 +974,7 @@ function CekDokumenDialog({
                     <p className="text-xs text-muted-foreground">{item.judul}</p>
                   </div>
                 </div>
+                {isViewer ? null : (
                 <Button
                   variant="outline"
                   size="sm"
@@ -962,6 +985,7 @@ function CekDokumenDialog({
                   <Download className="h-4 w-4" />
                   {unduhId === item.doc_id ? "Mengunduh..." : "Unduh"}
                 </Button>
+                )}
               </div>
             ))}
           </div>

@@ -8,7 +8,7 @@ import { Plus, ScanLine } from "lucide-react";
 import { RequireAuth } from "@/components/require-auth";
 import { AppShell } from "@/components/app-shell";
 import { useBadanUsaha } from "@/lib/badan-usaha-context";
-import { isUnauthorized } from "@/lib/auth-context";
+import { isUnauthorized, useAuth } from "@/lib/auth-context";
 import {
   ApiError,
   createPO,
@@ -69,6 +69,10 @@ const EMPTY_FORM: POCreateRequest = {
 };
 
 function POContent() {
+  // Peran "viewer" (Pengamat, 4 Sep 2026): hanya melihat & membaca.
+  // Server sudah menolak tulis/unduh; ini agar tak ada tombol mati.
+  const { user } = useAuth();
+  const isViewer = user?.role === "viewer";
   const { list: buList, selected } = useBadanUsaha();
   const router = useRouter();
   const [poList, setPoList] = React.useState<POSisaOut[]>([]);
@@ -251,11 +255,13 @@ function POContent() {
             if (v) setForm((f) => ({ ...f, badan_usaha_kode: f.badan_usaha_kode || selected }));
           }}
         >
-          <DialogTrigger asChild>
-            <Button className="gap-1.5">
-              <Plus className="h-4 w-4" /> Catat PO Baru
-            </Button>
-          </DialogTrigger>
+          {!isViewer ? (
+            <DialogTrigger asChild>
+              <Button className="gap-1.5">
+                <Plus className="h-4 w-4" /> Catat PO Baru
+              </Button>
+            </DialogTrigger>
+          ) : null}
           <DialogContent>
             <DialogHeader>
               <DialogTitle>Catat PO Baru</DialogTitle>
@@ -389,11 +395,13 @@ function POContent() {
             if (!v) resetOcrWizard();
           }}
         >
-          <DialogTrigger asChild>
-            <Button variant="outline" className="gap-1.5">
-              <ScanLine className="h-4 w-4" /> Tambah PO dari Foto/Scan
-            </Button>
-          </DialogTrigger>
+          {!isViewer ? (
+            <DialogTrigger asChild>
+              <Button variant="outline" className="gap-1.5">
+                <ScanLine className="h-4 w-4" /> Tambah PO dari Foto/Scan
+              </Button>
+            </DialogTrigger>
+          ) : null}
           <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-xl">
             <DialogHeader>
               <DialogTitle>Tambah PO dari Foto/Scan</DialogTitle>
@@ -676,23 +684,27 @@ function POContent() {
                     </TableCell>
                     <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
                       <div className="flex items-center justify-end gap-1.5">
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="outline"
-                          onClick={() => handleToggleStatus(po)}
-                        >
-                          {po.status === "aktif" ? "Nonaktifkan" : "Aktifkan"}
-                        </Button>
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="ghost"
-                          className="text-destructive hover:text-destructive"
-                          onClick={() => setHapusPo(po)}
-                        >
-                          Hapus
-                        </Button>
+                        {!isViewer ? (
+                          <>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleToggleStatus(po)}
+                            >
+                              {po.status === "aktif" ? "Nonaktifkan" : "Aktifkan"}
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              className="text-destructive hover:text-destructive"
+                              onClick={() => setHapusPo(po)}
+                            >
+                              Hapus
+                            </Button>
+                          </>
+                        ) : null}
                       </div>
                     </TableCell>
                   </TableRow>

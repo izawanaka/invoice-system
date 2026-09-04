@@ -45,6 +45,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const { list, selected, chosen, hydrated, resetWorkspace } = useBadanUsaha();
   const selectedBu = list.find((bu) => bu.kode === selected);
   const isOwner = user?.role === "owner";
+  // Peran "viewer" (Pengamat, 4 Sep 2026): pengamat murni. Dua halaman di bawah
+  // ini SELURUHNYA berisi aksi tulis (unggah BAP, terbitkan invoice, kirim
+  // dokumen), jadi tidak ada gunanya ditampilkan -- server menolak semuanya.
+  const isViewer = user?.role === "viewer";
 
   const isActive = (href: string) => pathname === href || pathname?.startsWith(href + "/");
 
@@ -61,8 +65,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   ];
   if (chosen) {
-    navItems.push({ href: "/bap", label: "Terbit Invoice", icon: FileText });
-    navItems.push({ href: "/invoice-gantung", label: "Invoice Gantung", icon: Send });
+    if (!isViewer) {
+      navItems.push({ href: "/bap", label: "Terbit Invoice", icon: FileText });
+      navItems.push({ href: "/invoice-gantung", label: "Invoice Gantung", icon: Send });
+    }
     navItems.push({
       section: "Laporan",
       items: [
@@ -183,7 +189,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 <DropdownMenuLabel>
                   <p className="text-sm font-medium">{user?.nama}</p>
                   <p className="text-xs font-normal text-muted-foreground">{user?.email}</p>
-                  <p className="text-xs font-normal text-muted-foreground capitalize">{user?.role}</p>
+                  <p className="text-xs font-normal text-muted-foreground">
+                    {isViewer ? "Pengamat — hanya melihat" : <span className="capitalize">{user?.role}</span>}
+                  </p>
                   {chosen && selectedBu ? (
                     <p className="mt-1 text-xs font-medium text-primary">Workspace: {selectedBu.kode}</p>
                   ) : null}

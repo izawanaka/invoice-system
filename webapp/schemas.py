@@ -57,7 +57,7 @@ class UserOut(BaseModel):
 class UserCreateRequest(BaseModel):
     email: EmailStr
     nama: str = Field(min_length=1)
-    role: str = Field(default="staff", pattern="^(owner|staff)$")
+    role: str = Field(default="staff", pattern="^(owner|staff|viewer)$")
 
 
 class UserCreateResult(BaseModel):
@@ -70,7 +70,7 @@ class UserCreateResult(BaseModel):
 
 class UserUpdateRequest(BaseModel):
     nama: Optional[str] = None
-    role: Optional[str] = Field(default=None, pattern="^(owner|staff)$")
+    role: Optional[str] = Field(default=None, pattern="^(owner|staff|viewer)$")
     aktif: Optional[bool] = None
 
 

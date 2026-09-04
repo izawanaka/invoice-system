@@ -18,7 +18,7 @@ import type { POSisaOut, InvoiceOut } from "@/lib/types";
 
 function DashboardContent() {
   const { user } = useAuth();
-  const bolehLihatPelunasan = user?.role === "owner";
+  const bolehLihatPelunasan = user?.role === "owner" || user?.role === "viewer";
   const router = useRouter();
   const [poList, setPoList] = React.useState<POSisaOut[]>([]);
   const [invoiceList, setInvoiceList] = React.useState<InvoiceOut[]>([]);

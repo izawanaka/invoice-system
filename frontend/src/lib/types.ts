@@ -2,7 +2,10 @@
 // supaya tidak ada lapisan terjemahan yang bisa jadi sumber salah baca data
 // finansial. Lihat 02_db_schema.md / 05_web_platform_plan.md di Project.
 
-export type Role = "owner" | "staff";
+// "viewer" (Pengamat) ditambahkan 4 Sep 2026 -- pengamat murni: boleh MEMBACA
+// semua termasuk pelunasan, tapi tidak menulis & tidak mengunduh. Penegakannya
+// di server (webapp/security.py + middleware main.py); di sini hanya tampilan.
+export type Role = "owner" | "staff" | "viewer";
 
 export interface MeResponse {
   id: number;

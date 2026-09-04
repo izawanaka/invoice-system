@@ -51,6 +51,14 @@ class CurrentUser:
     def is_owner(self) -> bool:
         return self.role == "owner"
 
+    @property
+    def is_viewer(self) -> bool:
+        """Peran 'viewer' (keputusan owner 4 Sep 2026): PENGAMAT MURNI.
+        Boleh MEMBACA semua -- termasuk pelunasan, yang justru ditutup dari staf --
+        tapi TIDAK boleh menulis apa pun dan TIDAK boleh mengunduh berkas.
+        """
+        return self.role == "viewer"
+
 
 def _unauthorized(detail: str = "Token tidak valid atau kedaluwarsa"):
     return HTTPException(
@@ -102,7 +110,56 @@ def boleh_lihat_pelunasan(user: CurrentUser) -> bool:
     tidak dikirim sama sekali oleh API untuk staf, supaya tidak bisa dilihat
     lewat DevTools/panggilan API langsung.
     """
-    return user.is_owner
+    return user.is_owner or user.is_viewer
+
+
+def role_dari_request(request):
+    '''Baca peran user dari header Authorization TANPA melempar exception.
+    Dipakai middleware penjaga tulis di main.py.
+
+    Sengaja membaca DB, BUKAN klaim role di dalam token: kalau owner menurunkan
+    seseorang jadi viewer, token lama TIDAK boleh tetap bisa menulis sampai
+    kedaluwarsa sendiri. Pola yang sama dengan pemeriksaan kolom aktif di
+    get_current_user().
+
+    Balik None kalau token tidak ada/tidak sah -- penolakan auth tetap urusan
+    get_current_user, middleware ini hanya soal peran.
+    '''
+    auth = request.headers.get('authorization') or ''
+    if not auth.lower().startswith('bearer '):
+        return None
+    try:
+        payload = jwt.decode(
+            auth[7:].strip(), settings.get_jwt_secret(), algorithms=[settings.JWT_ALGORITHM]
+        )
+        user_id = payload.get('sub')
+        if user_id is None:
+            return None
+        conn = db_helper.get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute('SELECT role FROM app_users WHERE id = %s AND aktif', (int(user_id),))
+            row = cur.fetchone()
+        finally:
+            conn.close()
+        return row[0] if row else None
+    except Exception:
+        return None
+
+
+def require_lihat_pelunasan(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+    '''MEMBACA data pelunasan: owner + viewer (keputusan owner 4 Sep 2026).
+
+    Staf TETAP ditolak -- pelonggaran ini khusus peran pengamat, bukan pencabutan
+    Aturan #11 utk staf. MENGUBAH pelunasan (catat/hapus cicilan, tandai lunas)
+    tetap memakai require_owner: viewer boleh melihat, tidak boleh menyentuh.
+    '''
+    if not boleh_lihat_pelunasan(user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail='Hanya Owner & Pengamat yang boleh melihat data pelunasan',
+        )
+    return user
 
 
 def require_owner(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:

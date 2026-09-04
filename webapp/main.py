@@ -10,13 +10,15 @@ purchase_orders, bap, invoices, invoice_items, app_users, app_audit_log), jangan
 pernah menyentuh tabel domain lain yang berbagi Postgres yang sama (guru,
 penggajian_guru, personal_finance_transactions, dst).
 """
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 import settings  # HARUS diimpor PALING AWAL -- ini yang menambahkan folder kode
                  # invoice (config.py, db_helper.py, dst) ke sys.path. Modul lain
                  # di bawah ini (termasuk semua routers/*) bergantung pada urutan ini.
 import db_helper
+import security
 from routers import auth, badan_usaha, bap, dokumen, faktur_pajak, invoices, mitra, paperless, pembayaran, po, resi, users
 
 app = FastAPI(
@@ -24,6 +26,56 @@ app = FastAPI(
     description="Fase 1 -- dashboard PO/BAP/Invoice multi-badan-usaha + bridge Paperless",
     version="0.1.0",
 )
+
+METODE_TULIS = {'POST', 'PATCH', 'PUT', 'DELETE'}
+JALUR_BEBAS_VIEWER = ('/auth/',)
+TIPE_BERKAS = ('application/pdf', 'application/octet-stream', 'application/zip')
+
+
+@app.middleware('http')
+async def penjaga_viewer(request: Request, call_next):
+    '''Penjaga GLOBAL peran viewer (keputusan owner 4 Sep 2026).
+
+    Viewer = PENGAMAT MURNI: boleh membaca apa saja (termasuk pelunasan, yang
+    justru ditutup dari staf), tapi TIDAK boleh menulis dan TIDAK boleh mengunduh.
+
+    Dua lapis, keduanya sengaja GAGAL-TERTUTUP:
+      1. TULIS  -- semua POST/PATCH/PUT/DELETE ditolak. Dikecualikan /auth/*
+         (login & ganti password sendiri memang POST dan wajib bisa dipakai).
+      2. UNDUH  -- unduhan memakai GET, jadi tidak tertangkap lapis 1. Yang
+         diperiksa BALASANNYA: kalau berupa lampiran berkas (Content-Disposition
+         attachment) atau tipe berkas biner, ditolak.
+
+    Sengaja middleware, BUKAN dependency per-endpoint: ada 8 endpoint unduhan di
+    7 router; menambal satu per satu berarti endpoint BARU yang lupa dipasangi
+    penjaga langsung jadi lubang. Di sini yang baru pun otomatis tertutup.
+
+    CATATAN URUTAN: didaftarkan SEBELUM CORSMiddleware supaya CORS tetap lapisan
+    terluar -- balasan 403 di sini harus tetap membawa header CORS, kalau tidak
+    browser hanya melihat error jaringan tanpa keterangan.
+    '''
+    peran = security.role_dari_request(request)
+
+    if peran == 'viewer' and request.method in METODE_TULIS \
+            and not request.url.path.startswith(JALUR_BEBAS_VIEWER):
+        return JSONResponse(
+            status_code=403,
+            content={'detail': 'Peran Pengamat hanya boleh melihat -- tidak boleh mengubah data.'},
+        )
+
+    response = await call_next(request)
+
+    if peran == 'viewer':
+        cd = (response.headers.get('content-disposition') or '').lower()
+        ct = (response.headers.get('content-type') or '').split(';')[0].strip().lower()
+        if 'attachment' in cd or ct in TIPE_BERKAS:
+            return JSONResponse(
+                status_code=403,
+                content={'detail': 'Peran Pengamat tidak boleh mengunduh berkas.'},
+            )
+
+    return response
+
 
 app.add_middleware(
     CORSMiddleware,

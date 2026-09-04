@@ -7,7 +7,7 @@ import { Upload, Trash2, FileCheck2 } from "lucide-react";
 import { RequireAuth } from "@/components/require-auth";
 import { AppShell } from "@/components/app-shell";
 import { useBadanUsaha } from "@/lib/badan-usaha-context";
-import { isUnauthorized } from "@/lib/auth-context";
+import { isUnauthorized, useAuth } from "@/lib/auth-context";
 import {
   ApiError,
   ocrExtractFaktur,
@@ -50,6 +50,10 @@ function StatusCocokBadge({ status }: { status: string }) {
 }
 
 function UploadFakturCard({ onSaved }: { onSaved: () => void }) {
+  // Peran "viewer" (Pengamat, 4 Sep 2026): hanya melihat & membaca.
+  // Server sudah menolak tulis/unduh; ini agar tak ada tombol mati.
+  const { user } = useAuth();
+  const isViewer = user?.role === "viewer";
   const { selected } = useBadanUsaha();
   const fileRef = React.useRef<HTMLInputElement | null>(null);
   const [file, setFile] = React.useState<File | null>(null);
@@ -230,6 +234,9 @@ function FakturPajakTable({
   items: FakturPajakOut[];
   onDeleted: () => void;
 }) {
+  // Peran "viewer" (Pengamat, 4 Sep 2026): hanya melihat & membaca.
+  const { user } = useAuth();
+  const isViewer = user?.role === "viewer";
   const [toDelete, setToDelete] = React.useState<FakturPajakOut | null>(null);
   const [deleting, setDeleting] = React.useState(false);
 
@@ -295,9 +302,11 @@ function FakturPajakTable({
                   </div>
                 </TableCell>
                 <TableCell>
+                  {isViewer ? null : (
                   <Button variant="ghost" size="icon" onClick={() => setToDelete(it)}>
                     <Trash2 className="h-4 w-4 text-destructive" />
                   </Button>
+                  )}
                 </TableCell>
               </TableRow>
             ))}
@@ -327,6 +336,10 @@ function FakturPajakTable({
 }
 
 function FakturPajakPageInner() {
+  // Peran "viewer" (Pengamat, 4 Sep 2026): hanya melihat & membaca.
+  // Server sudah menolak tulis/unduh; ini agar tak ada tombol mati.
+  const { user } = useAuth();
+  const isViewer = user?.role === "viewer";
   const { selected } = useBadanUsaha();
   const [items, setItems] = React.useState<FakturPajakOut[]>([]);
   const [loading, setLoading] = React.useState(true);

@@ -187,6 +187,7 @@ function BuatAkunDialog({
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="staff">Staf — input data, tidak melihat pelunasan</SelectItem>
+                <SelectItem value="viewer">Pengamat — hanya melihat & membaca, termasuk pelunasan</SelectItem>
                 <SelectItem value="owner">Owner — akses penuh termasuk pelunasan & akun</SelectItem>
               </SelectContent>
             </Select>
@@ -265,6 +266,7 @@ function EditAkunDialog({
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="staff">Staf</SelectItem>
+                <SelectItem value="viewer">Pengamat</SelectItem>
                 <SelectItem value="owner">Owner</SelectItem>
               </SelectContent>
             </Select>
@@ -485,6 +487,8 @@ function PengaturanContent() {
                           <Badge variant="default" className="gap-1">
                             <ShieldCheck className="h-3 w-3" /> Owner
                           </Badge>
+                        ) : u.role === "viewer" ? (
+                          <Badge variant="outline">Pengamat</Badge>
                         ) : (
                           <Badge variant="secondary">Staf</Badge>
                         )}

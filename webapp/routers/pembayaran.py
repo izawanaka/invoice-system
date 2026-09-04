@@ -85,7 +85,7 @@ def _sinkron_status(cur, no_invoice: str, status: str) -> None:
 def lihat_pembayaran(
     no_invoice: str,
     conn=Depends(get_db),
-    user: security.CurrentUser = Depends(security.require_owner),
+    user: security.CurrentUser = Depends(security.require_lihat_pelunasan),
 ):
     return _ringkas(conn.cursor(), no_invoice)
 

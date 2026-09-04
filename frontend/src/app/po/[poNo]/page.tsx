@@ -36,6 +36,10 @@ import {
 } from "@/components/ui/table";
 
 function DokumenPOCard({ poNo, kode }: { poNo: string; kode: string }) {
+  // Peran "viewer" (Pengamat, 4 Sep 2026): hanya melihat & membaca -- tidak
+  // mengunggah, mengunduh, atau menghapus dokumen PO. Server juga menolak.
+  const { user } = useAuth();
+  const isViewer = user?.role === "viewer";
   const [docs, setDocs] = React.useState<PODocOut[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [uploading, setUploading] = React.useState(false);
@@ -122,7 +126,7 @@ function DokumenPOCard({ poNo, kode }: { poNo: string; kode: string }) {
             type="button"
             size="sm"
             className="gap-1.5"
-            disabled={uploading}
+            disabled={uploading || isViewer}
             onClick={() => fileRef.current?.click()}
           >
             <Upload className="h-4 w-4" />
@@ -160,13 +164,14 @@ function DokumenPOCard({ poNo, kode }: { poNo: string; kode: string }) {
                   </div>
                 ) : (
                   <div className="flex shrink-0 items-center gap-1">
-                    <Button variant="ghost" size="sm" className="gap-1.5" onClick={() => unduh(d)}>
+                    <Button variant="ghost" size="sm" className="gap-1.5" disabled={isViewer} onClick={() => unduh(d)}>
                       <Download className="h-4 w-4" /> Lihat
                     </Button>
                     <Button
                       variant="ghost"
                       size="sm"
                       className="text-destructive hover:text-destructive"
+                      disabled={isViewer}
                       onClick={() => setHapusId(d.id)}
                     >
                       Hapus
@@ -191,7 +196,7 @@ function PODetailContent() {
   // Status invoice = informasi pelunasan; backend mengirim null utk staf
   // (routers/po.py), jadi kolomnya ikut disembunyikan supaya tidak jadi kolom
   // berisi "-" yang membingungkan.
-  const bolehLihatPelunasan = user?.role === "owner";
+  const bolehLihatPelunasan = user?.role === "owner" || user?.role === "viewer";
 
   const poNo = decodeURIComponent(params.poNo ?? "");
   const kode = search.get("kode") ?? selected;
