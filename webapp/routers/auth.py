@@ -213,16 +213,23 @@ def google_callback(request: Request, code: str = "", state: str = "", error: st
             return _gagal("Email Google ini tidak terdaftar untuk akun mana pun di cocopeat.")
         uid, email, nama, role, _aktif, _lvg = row
         # PIN MATI OTOMATIS begitu Google berhasil dipakai (keputusan owner
-        # 4 Sep 2026, meniru Cantabile). /auth/login/start sudah menolak dgn 409
-        # "PIN sudah ditutup. Silakan login lewat Google." saat pin_ditutup=true.
+        # 4 Sep 2026, meniru Cantabile) -- KECUALI PERAN OWNER.
+        #
+        # OWNER DIKECUALIKAN (keputusan owner 4 Sep 2026): PIN owner TIDAK PERNAH
+        # dimatikan oleh sistem. Alasannya anti-lockout -- owner adalah satu-satunya
+        # yang bisa memulihkan akun orang lain, jadi dia sendiri harus selalu punya
+        # lebih dari satu pintu masuk. Staff & viewer PIN-nya ditutup seperti
+        # Cantabile; /auth/login/start menolak dgn 409 "PIN sudah ditutup".
         #
         # JALAN PULANG (sengaja TIDAK ditutup, beda dari Cantabile):
-        #   1. Jalur PASSWORD /auth/login TETAP hidup -- owner mereset password
-        #      lewat /pengaturan kalau Google bermasalah.
+        #   1. Jalur PASSWORD /auth/login TETAP hidup untuk SEMUA peran -- owner
+        #      mereset password lewat /pengaturan kalau Google bermasalah.
         #   2. Pemulihan PIN hanya lewat DB (bukan UI):
         #      UPDATE app_users SET pin_ditutup=false WHERE id=<id>;
         cur.execute(
-            "UPDATE app_users SET last_login_at=%s, pin_ditutup=true WHERE id=%s",
+            "UPDATE app_users SET last_login_at=%s, "
+            "pin_ditutup = CASE WHEN role = 'owner' THEN pin_ditutup ELSE true END "
+            "WHERE id=%s",
             (datetime.now(timezone.utc), uid),
         )
         conn.commit()
