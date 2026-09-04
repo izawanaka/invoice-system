@@ -31,6 +31,25 @@ export default function LoginPage() {
     if (!loading && user) router.replace("/dashboard");
   }, [loading, user, router]);
 
+  // Login Google (4 Sep 2026, meniru Cantabile): backend mengembalikan JWT lewat
+  // FRAGMENT (#gtoken=...) -- fragment tidak pernah dikirim ke server, jadi tidak
+  // masuk log akses/proxy. Pesan gagal datang lewat ?google_error=.
+  React.useEffect(() => {
+    if (typeof window === "undefined") return;
+    const hash = window.location.hash;
+    if (hash.startsWith("#gtoken=")) {
+      setToken(decodeURIComponent(hash.slice("#gtoken=".length)));
+      window.history.replaceState(null, "", window.location.pathname);
+      window.location.assign("/pilih");
+      return;
+    }
+    const gerr = new URLSearchParams(window.location.search).get("google_error");
+    if (gerr) {
+      toast.error(gerr);
+      window.history.replaceState(null, "", window.location.pathname);
+    }
+  }, []);
+
   async function handleStart(e: React.FormEvent) {
     e.preventDefault();
     setSubmitting(true);
@@ -119,8 +138,8 @@ export default function LoginPage() {
               <Button type="submit" disabled={submitting} className="mt-2">
                 {submitting ? "Memproses..." : "Kirim Kode OTP"}
               </Button>
-              <Button type="button" variant="outline" disabled title="Segera hadir">
-                Masuk dengan Google (segera)
+              <Button type="button" variant="outline" onClick={() => window.location.assign("/api/auth/google/mulai")}>
+                Masuk dengan Google
               </Button>
               <Button type="button" variant="ghost" onClick={() => setPakaiPassword(true)}>
                 Gunakan kata sandi

@@ -8,6 +8,12 @@ import db_helper
 import email_otp
 from deps import get_db
 
+import secrets
+from urllib.parse import quote
+from fastapi import Request
+from fastapi.responses import RedirectResponse
+import google_login
+
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
@@ -157,3 +163,75 @@ def login_verify(body: schemas.LoginOtpVerify):
         )
     finally:
         conn.close()
+
+
+# ---------- Login Google (Fase B) -- meniru cantabile-app, 4 Sep 2026 ----------
+# Aditif murni: jalur /auth/login (password) dan /auth/login/start+verify (PIN+OTP)
+# TIDAK disentuh dan tetap terbuka (Vault #14). app_users.login_via_google di sini
+# berarti "BOLEH masuk lewat Google", bukan "wajib" -- gate penutup ala Cantabile
+# sengaja belum diterapkan sampai Google terbukti jalan di produksi.
+
+@router.get("/google/mulai")
+def google_mulai():
+    if not google_login.tersedia():
+        raise HTTPException(status_code=503, detail="Login Google belum dikonfigurasi di server.")
+    state = secrets.token_urlsafe(24)
+    resp = RedirectResponse(google_login.build_authorize_url(state), status_code=303)
+    resp.set_cookie(
+        google_login.GSTATE_COOKIE, google_login.make_gstate_cookie_value(state),
+        max_age=google_login.GSTATE_MAX_AGE, httponly=True, samesite="lax", secure=True, path="/",
+    )
+    return resp
+
+
+@router.get("/google/callback")
+def google_callback(request: Request, code: str = "", state: str = "", error: str = ""):
+    def _gagal(pesan: str):
+        r = RedirectResponse(f"/login?google_error={quote(pesan)}", status_code=303)
+        r.delete_cookie(google_login.GSTATE_COOKIE, path="/")
+        return r
+
+    if error:
+        return _gagal("Login Google dibatalkan.")
+    saved_state = google_login.read_gstate_cookie(request.cookies.get(google_login.GSTATE_COOKIE))
+    if not saved_state or saved_state != state or not code:
+        return _gagal("Login Google gagal (sesi kedaluwarsa). Coba lagi.")
+
+    hasil = google_login.tukar_kode_dan_verifikasi(code)
+    if not hasil.ok:
+        return _gagal(hasil.error or "Login Google gagal.")
+
+    conn = db_helper.get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, email, nama, role, aktif, login_via_google FROM app_users WHERE lower(email)=lower(%s)",
+            (hasil.email,),
+        )
+        row = cur.fetchone()
+        if row is None or not row[4] or not row[5]:
+            return _gagal("Email Google ini tidak terdaftar untuk akun mana pun di cocopeat.")
+        uid, email, nama, role, _aktif, _lvg = row
+        # PIN MATI OTOMATIS begitu Google berhasil dipakai (keputusan owner
+        # 4 Sep 2026, meniru Cantabile). /auth/login/start sudah menolak dgn 409
+        # "PIN sudah ditutup. Silakan login lewat Google." saat pin_ditutup=true.
+        #
+        # JALAN PULANG (sengaja TIDAK ditutup, beda dari Cantabile):
+        #   1. Jalur PASSWORD /auth/login TETAP hidup -- owner mereset password
+        #      lewat /pengaturan kalau Google bermasalah.
+        #   2. Pemulihan PIN hanya lewat DB (bukan UI):
+        #      UPDATE app_users SET pin_ditutup=false WHERE id=<id>;
+        cur.execute(
+            "UPDATE app_users SET last_login_at=%s, pin_ditutup=true WHERE id=%s",
+            (datetime.now(timezone.utc), uid),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    token = security.create_access_token(uid, email, role)
+    # Token dikirim lewat FRAGMENT (#), bukan query string: fragment tidak pernah
+    # dikirim ke server -> tidak masuk log akses/proxy (pelajaran dari log Cantabile).
+    r = RedirectResponse(f"/login#gtoken={token}", status_code=303)
+    r.delete_cookie(google_login.GSTATE_COOKIE, path="/")
+    return r
