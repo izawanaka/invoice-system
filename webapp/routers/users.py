@@ -20,9 +20,10 @@ Ditambah 5 Sep 2026 (keputusan owner, gaya Cantabile):
   - PASSWORD AWAL BOLEH DIINPUT OWNER (Buat Akun & Reset Password). Kosong ->
     sistem tetap membuat acak seperti sebelumnya. Minimal 8 karakter.
   - login_via_google = IZIN masuk lewat Google, bisa diubah owner.
-  - RESET PASSWORD MENGOSONGKAN google_terbukti_pada: ini jalur pemulihan. Untuk
-    staff/viewer yang sudah terbukti Google, password ditolak (routers/auth.py);
-    reset oleh owner membuat password awal berlaku lagi sampai Google terbukti ulang.
+  - PASSWORD AWAL = TIKET SEKALI PAKAI (5 Sep 2026). Buat Akun & Reset Password
+    menerbitkan tiket (password_aktif=true). Tiket hangus otomatis begitu
+    dipakai masuk sekali, atau begitu Google berhasil -- lihat routers/auth.py.
+    Reset Password TIDAK menyentuh izin Google.
 """
 import re
 import secrets
@@ -45,7 +46,7 @@ _ALFABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
 _PANJANG_PASSWORD = 14
 
 _KOLOM = ("id, email, nama, role, aktif, created_at, last_login_at, "
-          "username, login_via_google, google_terbukti_pada")
+          "username, login_via_google, google_terbukti_pada, password_aktif")
 
 _POLA_USERNAME = re.compile(r"^[a-z0-9._]{3,30}$")
 
@@ -81,6 +82,7 @@ def _baris_ke_out(r) -> schemas.UserOut:
         id=r[0], email=r[1], nama=r[2], role=r[3], aktif=r[4],
         created_at=r[5], last_login_at=r[6],
         username=r[7], login_via_google=bool(r[8]), google_terbukti_pada=r[9],
+        password_aktif=bool(r[10]),
     )
 
 
@@ -132,9 +134,11 @@ def create_user(
     _cek_username_unik(conn, username)
 
     password = body.password if body.password else _buat_password()
+    # password_aktif=true -> tiket masuk pertama untuk orang itu.
     cur.execute(
-        "INSERT INTO app_users (email, username, password_hash, nama, role, aktif, login_via_google) "
-        "VALUES (%s, %s, %s, %s, %s, true, %s) RETURNING " + _KOLOM,
+        "INSERT INTO app_users (email, username, password_hash, nama, role, aktif, "
+        "login_via_google, password_aktif) "
+        "VALUES (%s, %s, %s, %s, %s, true, %s, true) RETURNING " + _KOLOM,
         (email, username, security.hash_password(password), body.nama.strip(), body.role,
          bool(body.login_via_google)),
     )
@@ -216,16 +220,13 @@ def reset_password(
     """Terbitkan password baru untuk akun tsb (diinput owner, atau acak kalau
     kosong). Password lama langsung tidak berlaku.
 
-    JALUR PEMULIHAN (model Cantabile, 5 Sep 2026): pada model ini akun non-owner
-    dengan login_via_google=true DITOLAK memakai password. Karena itu Reset
-    Password oleh owner sekaligus MEMATIKAN izin Google untuk non-owner --
-    kalau tidak, password yang baru saja diterbitkan tidak akan bisa dipakai
-    sama sekali dan owner tidak punya cara memulihkan orang yang Google-nya
-    bermasalah. google_terbukti_pada ikut dikosongkan (catatan "sudah teruji"
-    di-reset bersama). Owner: izin Google dibiarkan apa adanya.
+    MENERBITKAN TIKET BARU (5 Sep 2026): password_aktif di-set true, sehingga
+    orang itu boleh masuk SEKALI dengan sandi ini. Begitu berhasil, tiketnya
+    hangus sendiri dan seterusnya dia wajib lewat Google.
 
-    Setelah orang itu bisa masuk lagi, owner menyalakan kembali centang
-    "Izinkan masuk lewat Google" di /pengaturan.
+    Izin Google (login_via_google) TIDAK disentuh di sini -- reset sandi bukan
+    alasan untuk mencabut akses Google seseorang. google_terbukti_pada juga
+    dibiarkan sebagai catatan historis "Google pernah berhasil".
 
     Token JWT yang sudah terlanjur dipegang user itu TIDAK otomatis mati --
     kalau tujuannya mencabut akses, nonaktifkan akunnya."""
@@ -234,8 +235,7 @@ def reset_password(
     password = body.password if manual else _buat_password()
     cur = conn.cursor()
     cur.execute(
-        "UPDATE app_users SET password_hash = %s, google_terbukti_pada = NULL, "
-        "login_via_google = CASE WHEN role = 'owner' THEN login_via_google ELSE false END "
+        "UPDATE app_users SET password_hash = %s, password_aktif = true "
         "WHERE id = %s RETURNING " + _KOLOM,
         (security.hash_password(password), user_id),
     )
@@ -245,6 +245,6 @@ def reset_password(
         raise HTTPException(status_code=500, detail="rowcount != 1, dibatalkan demi keamanan data")
     log_audit(conn, user.id, "reset_password", "app_users", user_id,
               {"email": row[1], "username": row[7], "password_manual": manual,
-               "izin_google_dimatikan": bool(row[8]) and row[3] != "owner"})
+               "tiket_sandi_diterbitkan": True})
     conn.commit()
     return schemas.UserCreateResult(user=_baris_ke_out(baru), password_sementara=password)

@@ -28,6 +28,8 @@ export interface UserOut {
   // 5 Sep 2026: izin Google (diatur owner) & bukti Google (diisi sistem)
   login_via_google: boolean;
   google_terbukti_pada?: string | null;
+  // Tiket sandi sekali pakai: true = sandi awal masih bisa dipakai sekali.
+  password_aktif: boolean;
 }
 
 export interface UserCreateRequest {

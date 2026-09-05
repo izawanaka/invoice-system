@@ -25,21 +25,30 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 #   - Identitas SEMATA dari email yang dikonfirmasi Google, dicocokkan ke
 #     app_users.email. Password tidak pernah singgah di cocopeat.
 #
-# GATE (Cantabile): akun dengan login_via_google=true MENOLAK login password
-#   sejak flag dinyalakan owner -- bukan menunggu Google terbukti.
-#   KECUALI PERAN OWNER (keputusan owner 4 & 5 Sep 2026): owner selalu punya
-#   lebih dari satu pintu, karena dialah satu-satunya yang bisa memulihkan
-#   akun orang lain.
+# PASSWORD AWAL = TIKET SEKALI PAKAI (keputusan owner 5 Sep 2026):
+#   "pass awal itu hanya sebagai tanda mereka bisa masuk, dan begitu bisa masuk,
+#    sudah otomatis mati (flag off)".
 #
-# PEMULIHAN kalau Google bermasalah untuk seseorang: owner matikan centang
-#   "Izinkan masuk lewat Google" di /pengaturan (di Cantabile ini harus lewat
-#   SQL langsung; di cocopeat cukup lewat UI), atau Reset Password yang
-#   otomatis mematikan izin Google untuk non-owner.
+#   app_users.password_aktif = true  -> tiket masih berlaku, boleh masuk SEKALI
+#                                       dengan password awal dari owner.
+#   Setelah login password BERHASIL   -> password_aktif otomatis di-set false.
+#   Setelah login Google BERHASIL     -> password_aktif juga di-set false
+#                                       (tiket tidak diperlukan lagi).
+#   password_aktif = false            -> non-owner WAJIB lewat Google.
+#
+#   OWNER DIKECUALIKAN (keputusan owner 4 & 5 Sep 2026): owner selalu boleh
+#   memakai password, karena dialah satu-satunya yang bisa memulihkan akun
+#   orang lain. Kalau owner ikut terkunci, tidak ada siapa pun di atasnya.
+#
+# PEMULIHAN kalau Google bermasalah untuk seseorang: owner menekan Reset
+#   Password di /pengaturan -> terbit tiket baru (password_aktif=true). Izin
+#   Google TIDAK diutak-atik oleh reset.
 # ---------------------------------------------------------------------------
 
 _PESAN_SALAH = "Username atau password salah"
 _PESAN_GOOGLE_ONLY = ("Akun ini masuk lewat Google. Ketik username Anda lalu tekan "
-                      "\"Masuk dengan Google\".")
+                      "\"Masuk dengan Google\". Kalau bermasalah, minta Owner "
+                      "menerbitkan kata sandi awal baru.")
 
 
 @router.post("/login", response_model=schemas.LoginResponse)
@@ -48,26 +57,33 @@ def login(body: schemas.LoginRequest):
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT id, email, password_hash, nama, role, aktif, username, login_via_google "
+            "SELECT id, email, password_hash, nama, role, aktif, username, password_aktif "
             "FROM app_users WHERE lower(username) = lower(%s)",
             (body.username.strip(),),
         )
         row = cur.fetchone()
         if row is None or not row[5]:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=_PESAN_SALAH)
-        user_id, email, password_hash, nama, role, _aktif, username, lvg = row
-        # Gate Cantabile: cek SEBELUM memverifikasi password, supaya jalur ini
-        # tidak bisa dipakai menebak-nebak password akun Google.
-        if role != "owner" and lvg:
+        user_id, email, password_hash, nama, role, _aktif, username, password_aktif = row
+        # Tiket sudah terpakai/tidak pernah diterbitkan -> non-owner wajib Google.
+        # Dicek SEBELUM memverifikasi password, supaya jalur ini tidak bisa
+        # dipakai menebak-nebak password akun yang sudah pindah ke Google.
+        if role != "owner" and not password_aktif:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=_PESAN_GOOGLE_ONLY)
         if not security.verify_password(body.password, password_hash):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=_PESAN_SALAH)
 
+        # TIKET LANGSUNG HANGUS setelah berhasil dipakai (non-owner).
         cur.execute(
-            "UPDATE app_users SET last_login_at = %s WHERE id = %s",
+            "UPDATE app_users SET last_login_at = %s, "
+            "password_aktif = CASE WHEN role = 'owner' THEN password_aktif ELSE false END "
+            "WHERE id = %s",
             (datetime.now(timezone.utc), user_id),
         )
         conn.commit()
+        if role != "owner":
+            print(f"[TIKET SANDI TERPAKAI] {username} ({email}) -- selanjutnya wajib Google",
+                  flush=True)
 
         token = security.create_access_token(user_id, email, role)
         return schemas.LoginResponse(
@@ -193,10 +209,12 @@ def google_callback(request: Request, code: str = "", state: str = "", error: st
         now = datetime.now(timezone.utc)
         # google_terbukti_pada = catatan bahwa Google BENAR-BENAR pernah berhasil
         # untuk akun ini (dipakai owner di /pengaturan sbg tanda "sudah teruji").
+        # Tiket sandi ikut hangus: kalau Google sudah jalan, tiket tidak perlu lagi.
         # pin_ditutup diteruskan seperti sebelumnya; owner tidak pernah ditutup.
         cur.execute(
             "UPDATE app_users SET last_login_at=%s, "
             "google_terbukti_pada = COALESCE(google_terbukti_pada, %s), "
+            "password_aktif = CASE WHEN role = 'owner' THEN password_aktif ELSE false END, "
             "pin_ditutup = CASE WHEN role = 'owner' THEN pin_ditutup ELSE true END "
             "WHERE id=%s",
             (now, now, uid),

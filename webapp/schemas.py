@@ -50,6 +50,8 @@ class UserOut(BaseModel):
     # 5 Sep 2026: izin Google (diatur owner) & bukti Google (diisi sistem saat sukses)
     login_via_google: bool = False
     google_terbukti_pada: Optional[datetime] = None
+    # Tiket sandi sekali pakai: true = sandi awal masih bisa dipakai sekali.
+    password_aktif: bool = False
 
 
 class UserCreateRequest(BaseModel):

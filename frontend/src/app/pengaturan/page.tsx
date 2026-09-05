@@ -100,8 +100,8 @@ function PasswordSekaliDialog({
             </div>
           </div>
           <p className="text-xs text-muted-foreground">
-            Untuk Staf & Pengamat: password ini berlaku sampai yang bersangkutan berhasil masuk
-            lewat Google satu kali — setelah itu password otomatis tidak berlaku lagi.
+            Untuk Staf &amp; Pengamat: sandi ini hanya berlaku SATU KALI masuk. Begitu dipakai,
+            sandi otomatis mati dan seterusnya akun itu hanya bisa masuk lewat Google.
           </p>
         </div>
         <DialogFooter>
@@ -404,8 +404,8 @@ function ResetPasswordDialog({
           <DialogTitle>Reset Password — {target?.nama}</DialogTitle>
           <DialogDescription>
             Password lama langsung tidak berlaku.
-            {target && target.role !== "owner" && target.login_via_google
-              ? " Karena akun ini masuk lewat Google, izin Google-nya akan DIMATIKAN sekalian supaya password ini bisa dipakai. Nyalakan lagi lewat tombol Ubah setelah yang bersangkutan bisa masuk."
+            {target && target.role !== "owner"
+              ? " Sandi ini berlaku untuk SATU KALI masuk saja — begitu dipakai, sandi otomatis mati dan seterusnya akun ini hanya bisa lewat Google."
               : ""}
           </DialogDescription>
         </DialogHeader>
@@ -641,23 +641,27 @@ function PengaturanContent() {
                         )}
                       </TableCell>
                       <TableCell className="text-xs">
-                        {u.login_via_google ? (
+                        {u.role === "owner" ? (
+                          <Badge variant="outline">Google + sandi</Badge>
+                        ) : !u.login_via_google ? (
+                          <Badge variant="destructive" title="Izin Google mati — akun ini tidak bisa masuk lewat Google">
+                            Google dimatikan
+                          </Badge>
+                        ) : u.password_aktif ? (
+                          <Badge variant="outline" title="Sandi awal masih bisa dipakai untuk satu kali masuk">
+                            Tiket sandi aktif
+                          </Badge>
+                        ) : (
                           <Badge
-                            variant={u.google_terbukti_pada ? "success" : "outline"}
+                            variant="success"
                             title={
                               u.google_terbukti_pada
                                 ? `Google terbukti ${formatDate(u.google_terbukti_pada)}`
-                                : "Izin Google menyala, tapi BELUM pernah berhasil dipakai"
+                                : "Tiket sandi sudah terpakai — wajib Google"
                             }
                           >
-                            {u.role === "owner"
-                              ? "Google + sandi"
-                              : u.google_terbukti_pada
-                                ? "Google saja ✓"
-                                : "Google saja (belum teruji)"}
+                            {u.google_terbukti_pada ? "Google saja ✓" : "Google saja"}
                           </Badge>
-                        ) : (
-                          <Badge variant="outline">Kata sandi</Badge>
                         )}
                       </TableCell>
                       <TableCell className="text-xs text-muted-foreground">
