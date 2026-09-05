@@ -216,9 +216,16 @@ def reset_password(
     """Terbitkan password baru untuk akun tsb (diinput owner, atau acak kalau
     kosong). Password lama langsung tidak berlaku.
 
-    JALUR PEMULIHAN GATE GOOGLE (5 Sep 2026): google_terbukti_pada DIKOSONGKAN,
-    sehingga staff/viewer yang sebelumnya hanya bisa masuk lewat Google boleh
-    memakai password awal ini lagi -- sampai Google terbukti ulang.
+    JALUR PEMULIHAN (model Cantabile, 5 Sep 2026): pada model ini akun non-owner
+    dengan login_via_google=true DITOLAK memakai password. Karena itu Reset
+    Password oleh owner sekaligus MEMATIKAN izin Google untuk non-owner --
+    kalau tidak, password yang baru saja diterbitkan tidak akan bisa dipakai
+    sama sekali dan owner tidak punya cara memulihkan orang yang Google-nya
+    bermasalah. google_terbukti_pada ikut dikosongkan (catatan "sudah teruji"
+    di-reset bersama). Owner: izin Google dibiarkan apa adanya.
+
+    Setelah orang itu bisa masuk lagi, owner menyalakan kembali centang
+    "Izinkan masuk lewat Google" di /pengaturan.
 
     Token JWT yang sudah terlanjur dipegang user itu TIDAK otomatis mati --
     kalau tujuannya mencabut akses, nonaktifkan akunnya."""
@@ -227,7 +234,8 @@ def reset_password(
     password = body.password if manual else _buat_password()
     cur = conn.cursor()
     cur.execute(
-        "UPDATE app_users SET password_hash = %s, google_terbukti_pada = NULL "
+        "UPDATE app_users SET password_hash = %s, google_terbukti_pada = NULL, "
+        "login_via_google = CASE WHEN role = 'owner' THEN login_via_google ELSE false END "
         "WHERE id = %s RETURNING " + _KOLOM,
         (security.hash_password(password), user_id),
     )
@@ -237,6 +245,6 @@ def reset_password(
         raise HTTPException(status_code=500, detail="rowcount != 1, dibatalkan demi keamanan data")
     log_audit(conn, user.id, "reset_password", "app_users", user_id,
               {"email": row[1], "username": row[7], "password_manual": manual,
-               "google_terbukti_dibuka": row[9] is not None})
+               "izin_google_dimatikan": bool(row[8]) and row[3] != "owner"})
     conn.commit()
     return schemas.UserCreateResult(user=_baris_ke_out(baru), password_sementara=password)

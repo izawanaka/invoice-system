@@ -404,8 +404,8 @@ function ResetPasswordDialog({
           <DialogTitle>Reset Password — {target?.nama}</DialogTitle>
           <DialogDescription>
             Password lama langsung tidak berlaku.
-            {target && target.role !== "owner" && target.google_terbukti_pada
-              ? " Akun ini sudah terbukti masuk lewat Google; reset akan membuka lagi jalur password sampai Google terbukti ulang."
+            {target && target.role !== "owner" && target.login_via_google
+              ? " Karena akun ini masuk lewat Google, izin Google-nya akan DIMATIKAN sekalian supaya password ini bisa dipakai. Nyalakan lagi lewat tombol Ubah setelah yang bersangkutan bisa masuk."
               : ""}
           </DialogDescription>
         </DialogHeader>
@@ -641,14 +641,23 @@ function PengaturanContent() {
                         )}
                       </TableCell>
                       <TableCell className="text-xs">
-                        {u.google_terbukti_pada ? (
-                          <Badge variant="success" title={`Google terbukti ${formatDate(u.google_terbukti_pada)}`}>
-                            {u.role === "owner" ? "Google + password" : "Google saja"}
+                        {u.login_via_google ? (
+                          <Badge
+                            variant={u.google_terbukti_pada ? "success" : "outline"}
+                            title={
+                              u.google_terbukti_pada
+                                ? `Google terbukti ${formatDate(u.google_terbukti_pada)}`
+                                : "Izin Google menyala, tapi BELUM pernah berhasil dipakai"
+                            }
+                          >
+                            {u.role === "owner"
+                              ? "Google + sandi"
+                              : u.google_terbukti_pada
+                                ? "Google saja ✓"
+                                : "Google saja (belum teruji)"}
                           </Badge>
-                        ) : u.login_via_google ? (
-                          <Badge variant="outline">Password · Google diizinkan</Badge>
                         ) : (
-                          <Badge variant="outline">Password saja</Badge>
+                          <Badge variant="outline">Kata sandi</Badge>
                         )}
                       </TableCell>
                       <TableCell className="text-xs text-muted-foreground">

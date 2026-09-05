@@ -11,11 +11,14 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
-// 5 Sep 2026 (keputusan owner): login PIN + OTP email DIMATIKAN. Yang diketik
-// hanya USERNAME (di belakang layar tetap email, gaya Cantabile). Jalur kedua:
-// "Masuk dengan Google" -- identitas Google tetap dari email akun, tidak perlu
-// username. Untuk staff & viewer, begitu Google pernah sukses, password tidak
-// berlaku lagi (ditolak backend dengan pesan yang jelas).
+// 5 Sep 2026 -- SALINAN MODEL CANTABILE (keputusan owner):
+// Ketik USERNAME saja, lalu tekan "Masuk dengan Google". Username hanya dikirim
+// sebagai login_hint (saran akun di halaman Google); identitas sesungguhnya
+// ditentukan Google lewat email. Password tidak pernah singgah di cocopeat.
+//
+// Kata sandi = JALUR DARURAT TERSEMBUNYI (di Cantabile perannya dipegang PIN).
+// Akun dengan izin Google menyala akan ditolak backend kalau memakai password,
+// kecuali peran Owner. Karena itu kolom sandi disembunyikan di balik tautan.
 
 export default function LoginPage() {
   const { user, loading, login } = useAuth();
@@ -23,15 +26,15 @@ export default function LoginPage() {
 
   const [username, setUsername] = React.useState("");
   const [password, setPassword] = React.useState("");
+  const [pakaiSandi, setPakaiSandi] = React.useState(false);
   const [submitting, setSubmitting] = React.useState(false);
 
   React.useEffect(() => {
     if (!loading && user) router.replace("/dashboard");
   }, [loading, user, router]);
 
-  // Login Google (4 Sep 2026, meniru Cantabile): backend mengembalikan JWT lewat
-  // FRAGMENT (#gtoken=...) -- fragment tidak pernah dikirim ke server, jadi tidak
-  // masuk log akses/proxy. Pesan gagal datang lewat ?google_error=.
+  // Backend mengembalikan JWT lewat FRAGMENT (#gtoken=...) -- fragment tidak
+  // pernah dikirim ke server, jadi tidak masuk log akses/proxy.
   React.useEffect(() => {
     if (typeof window === "undefined") return;
     const hash = window.location.hash;
@@ -48,7 +51,16 @@ export default function LoginPage() {
     }
   }, []);
 
-  async function handlePassword(e: React.FormEvent) {
+  function masukGoogle() {
+    const u = username.trim();
+    if (!u) {
+      toast.error("Ketik username Anda dulu.");
+      return;
+    }
+    window.location.assign(`/api/auth/google/mulai?username=${encodeURIComponent(u)}`);
+  }
+
+  async function handleSandi(e: React.FormEvent) {
     e.preventDefault();
     setSubmitting(true);
     try {
@@ -70,7 +82,7 @@ export default function LoginPage() {
           <CardDescription>Dashboard manajemen PO, BAP, dan Invoice.</CardDescription>
         </CardHeader>
         <CardContent>
-          <form onSubmit={handlePassword} className="flex flex-col gap-4">
+          <form onSubmit={handleSandi} className="flex flex-col gap-4">
             <div className="flex flex-col gap-1.5">
               <Label htmlFor="username">Username</Label>
               <Input
@@ -82,36 +94,56 @@ export default function LoginPage() {
                 required
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !pakaiSandi) {
+                    e.preventDefault();
+                    masukGoogle();
+                  }
+                }}
               />
             </div>
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor="password">Kata sandi</Label>
-              <Input
-                id="password"
-                type="password"
-                autoComplete="current-password"
-                required
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-              />
-            </div>
-            <Button type="submit" disabled={submitting} className="mt-2">
-              {submitting ? "Memproses..." : "Masuk"}
-            </Button>
-            <div className="relative my-1 text-center text-xs text-muted-foreground">
-              <span className="bg-card px-2">atau</span>
-              <div className="absolute inset-x-0 top-1/2 -z-10 border-t border-border" />
-            </div>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => window.location.assign("/api/auth/google/mulai")}
-            >
-              Masuk dengan Google
-            </Button>
-            <p className="text-xs text-muted-foreground">
-              Username diatur oleh Owner di menu Pengaturan. Lupa kata sandi? Minta Owner mereset.
-            </p>
+
+            {pakaiSandi ? (
+              <>
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor="password">Kata sandi</Label>
+                  <Input
+                    id="password"
+                    type="password"
+                    autoComplete="current-password"
+                    required
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                  />
+                </div>
+                <Button type="submit" disabled={submitting}>
+                  {submitting ? "Memproses..." : "Masuk"}
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={() => {
+                    setPakaiSandi(false);
+                    setPassword("");
+                  }}
+                >
+                  Kembali
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button type="button" onClick={masukGoogle}>
+                  Masuk dengan Google
+                </Button>
+                <Button type="button" variant="ghost" onClick={() => setPakaiSandi(true)}>
+                  Gunakan kata sandi
+                </Button>
+                <p className="text-xs text-muted-foreground">
+                  Kata sandi hanya untuk akun Owner. Akun lain masuk lewat Google — kalau
+                  bermasalah, hubungi Owner.
+                </p>
+              </>
+            )}
           </form>
         </CardContent>
       </Card>

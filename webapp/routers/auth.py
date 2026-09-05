@@ -15,20 +15,31 @@ import google_login
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
-# ---------- Login pakai USERNAME + password (keputusan owner 5 Sep 2026) ----------
-# "input-nya cuma username, tetapi di belakangnya tetap menggunakan email" (gaya
-# Cantabile). Username adalah yang DIKETIK; email tetap identitas internal (JWT,
-# audit) sekaligus identitas Google. Email TIDAK diterima di kolom login.
+# ---------------------------------------------------------------------------
+# MODEL LOGIN = SALINAN CANTABILE (keputusan owner 5 Sep 2026:
+# "susun persis seperti cantabile ... copy paste sistemnya, jangan berubah")
 #
-# GATE GOOGLE (keputusan owner 5 Sep 2026, "otomatis setelah Google terbukti 1x"):
-#   staff & viewer -> begitu app_users.google_terbukti_pada terisi (login Google
-#   pertama SUKSES), jalur password DITOLAK; mereka hanya bisa masuk lewat Google.
-#   owner -> TIDAK PERNAH kena gate ini (anti-lockout: owner adalah satu-satunya
-#   yang bisa memulihkan akun orang lain, jadi ia harus selalu punya >1 pintu).
-# JALAN PULANG: owner mereset password di /pengaturan -> google_terbukti_pada
-#   dikosongkan lagi -> password awal berlaku sampai Google terbukti ulang.
+# Alur: user mengetik USERNAME saja, lalu klik "Masuk dengan Google".
+#   - Username TIDAK diverifikasi sebagai kredensial di jalur Google; ia hanya
+#     dipakai untuk `login_hint` (saran akun di halaman Google), persis Cantabile.
+#   - Identitas SEMATA dari email yang dikonfirmasi Google, dicocokkan ke
+#     app_users.email. Password tidak pernah singgah di cocopeat.
+#
+# GATE (Cantabile): akun dengan login_via_google=true MENOLAK login password
+#   sejak flag dinyalakan owner -- bukan menunggu Google terbukti.
+#   KECUALI PERAN OWNER (keputusan owner 4 & 5 Sep 2026): owner selalu punya
+#   lebih dari satu pintu, karena dialah satu-satunya yang bisa memulihkan
+#   akun orang lain.
+#
+# PEMULIHAN kalau Google bermasalah untuk seseorang: owner matikan centang
+#   "Izinkan masuk lewat Google" di /pengaturan (di Cantabile ini harus lewat
+#   SQL langsung; di cocopeat cukup lewat UI), atau Reset Password yang
+#   otomatis mematikan izin Google untuk non-owner.
+# ---------------------------------------------------------------------------
 
 _PESAN_SALAH = "Username atau password salah"
+_PESAN_GOOGLE_ONLY = ("Akun ini masuk lewat Google. Ketik username Anda lalu tekan "
+                      "\"Masuk dengan Google\".")
 
 
 @router.post("/login", response_model=schemas.LoginResponse)
@@ -37,22 +48,20 @@ def login(body: schemas.LoginRequest):
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT id, email, password_hash, nama, role, aktif, username, google_terbukti_pada "
+            "SELECT id, email, password_hash, nama, role, aktif, username, login_via_google "
             "FROM app_users WHERE lower(username) = lower(%s)",
             (body.username.strip(),),
         )
         row = cur.fetchone()
         if row is None or not row[5]:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=_PESAN_SALAH)
-        user_id, email, password_hash, nama, role, _aktif, username, google_terbukti = row
+        user_id, email, password_hash, nama, role, _aktif, username, lvg = row
+        # Gate Cantabile: cek SEBELUM memverifikasi password, supaya jalur ini
+        # tidak bisa dipakai menebak-nebak password akun Google.
+        if role != "owner" and lvg:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=_PESAN_GOOGLE_ONLY)
         if not security.verify_password(body.password, password_hash):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=_PESAN_SALAH)
-        if role != "owner" and google_terbukti is not None:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Akun ini sudah masuk lewat Google, password tidak berlaku lagi. "
-                       "Gunakan tombol \"Masuk dengan Google\".",
-            )
 
         cur.execute(
             "UPDATE app_users SET last_login_at = %s WHERE id = %s",
@@ -93,13 +102,10 @@ def change_password(
 
 
 # ---------- Jalur Email + PIN + OTP (Fase A) DIMATIKAN 5 Sep 2026 ----------
-# Keputusan owner: "dimatikan saja kirim OTP". Faktanya jalur ini tidak pernah
-# hidup: tidak ada akun yang punya pin_hash, app_login_otp kosong, dan
-# GMAIL_APP_PASSWORD tidak pernah terpasang. Endpoint dibiarkan ada (410 Gone)
-# supaya klien lama mendapat pesan yang jelas, bukan 404 yang membingungkan.
-# Tabel app_login_otp & kolom pin_* di app_users DIBIARKAN (historis, tidak dipakai).
+# Tidak pernah hidup: 0 pin_hash, app_login_otp kosong, GMAIL_APP_PASSWORD kosong.
+# Endpoint dipertahankan sebagai 410 supaya klien lama dapat pesan jelas.
 
-_PESAN_OTP_MATI = "Login PIN/OTP sudah dimatikan (5 Sep 2026). Masuk dengan username + password, atau lewat Google."
+_PESAN_OTP_MATI = "Login PIN/OTP sudah dimatikan (5 Sep 2026). Ketik username lalu masuk lewat Google."
 
 
 @router.post("/login/start", status_code=status.HTTP_410_GONE)
@@ -112,16 +118,30 @@ def login_verify_dimatikan():
     raise HTTPException(status_code=status.HTTP_410_GONE, detail=_PESAN_OTP_MATI)
 
 
-# ---------- Login Google (Fase B) -- meniru cantabile-app, 4 Sep 2026 ----------
-# app_users.login_via_google = IZIN masuk lewat Google (dinyalakan owner di /pengaturan).
-# app_users.google_terbukti_pada = BUKTI Google pernah sukses (diisi di callback).
+# ---------- Login Google -- salinan Cantabile ----------
 
 @router.get("/google/mulai")
-def google_mulai():
+def google_mulai(username: str = ""):
+    """username hanya untuk login_hint (saran akun di halaman Google), persis
+    Cantabile. Username yang tidak dikenal TIDAK ditolak di sini -- membalas
+    'user tidak ada' pada langkah ini akan membocorkan daftar akun. Kalau email
+    Google-nya nanti tidak cocok, penolakan terjadi di callback."""
     if not google_login.tersedia():
         raise HTTPException(status_code=503, detail="Login Google belum dikonfigurasi di server.")
+    hint = None
+    u = (username or "").strip()
+    if u:
+        conn = db_helper.get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT email FROM app_users WHERE lower(username)=lower(%s) AND aktif", (u,))
+            r = cur.fetchone()
+            if r:
+                hint = r[0]
+        finally:
+            conn.close()
     state = secrets.token_urlsafe(24)
-    resp = RedirectResponse(google_login.build_authorize_url(state), status_code=303)
+    resp = RedirectResponse(google_login.build_authorize_url(state, login_hint=hint), status_code=303)
     resp.set_cookie(
         google_login.GSTATE_COOKIE, google_login.make_gstate_cookie_value(state),
         max_age=google_login.GSTATE_MAX_AGE, httponly=True, samesite="lax", secure=True, path="/",
@@ -131,20 +151,27 @@ def google_mulai():
 
 @router.get("/google/callback")
 def google_callback(request: Request, code: str = "", state: str = "", error: str = ""):
-    def _gagal(pesan: str):
+    def _gagal(pesan: str, sebab: str):
+        # Sebab dicatat ke log server untuk diagnosis. TIDAK memuat code/token.
+        print(f"[GOOGLE-LOGIN GAGAL] {sebab}", flush=True)
         r = RedirectResponse(f"/login?google_error={quote(pesan)}", status_code=303)
         r.delete_cookie(google_login.GSTATE_COOKIE, path="/")
         return r
 
     if error:
-        return _gagal("Login Google dibatalkan.")
-    saved_state = google_login.read_gstate_cookie(request.cookies.get(google_login.GSTATE_COOKIE))
+        return _gagal("Login Google dibatalkan.", f"Google mengembalikan error={error}")
+    ck = request.cookies.get(google_login.GSTATE_COOKIE)
+    saved_state = google_login.read_gstate_cookie(ck)
     if not saved_state or saved_state != state or not code:
-        return _gagal("Login Google gagal (sesi kedaluwarsa). Coba lagi.")
+        return _gagal(
+            "Login Google gagal (sesi kedaluwarsa). Coba lagi.",
+            f"state mismatch: cookie_ada={bool(ck)} cookie_terbaca={bool(saved_state)} "
+            f"cocok={saved_state == state if saved_state else False} code_ada={bool(code)}",
+        )
 
     hasil = google_login.tukar_kode_dan_verifikasi(code)
     if not hasil.ok:
-        return _gagal(hasil.error or "Login Google gagal.")
+        return _gagal(hasil.error or "Login Google gagal.", f"tukar_kode gagal: {hasil.error}")
 
     conn = db_helper.get_conn()
     try:
@@ -154,14 +181,19 @@ def google_callback(request: Request, code: str = "", state: str = "", error: st
             (hasil.email,),
         )
         row = cur.fetchone()
-        if row is None or not row[4] or not row[5]:
-            return _gagal("Email Google ini tidak terdaftar untuk akun mana pun di cocopeat.")
+        if row is None:
+            return _gagal("Email Google ini tidak terdaftar untuk akun mana pun di cocopeat.",
+                          f"email dari Google tidak ada di app_users: {hasil.email}")
+        if not row[4]:
+            return _gagal("Akun ini sudah dinonaktifkan.", f"akun nonaktif: {hasil.email}")
+        if not row[5]:
+            return _gagal("Akun ini belum diizinkan masuk lewat Google. Hubungi owner.",
+                          f"login_via_google=false: {hasil.email}")
         uid, email, nama, role, _aktif, _lvg = row
         now = datetime.now(timezone.utc)
-        # Google TERBUKTI untuk akun ini -> catat (sekali; nilai pertama dipertahankan).
-        # Untuk staff & viewer, sejak titik ini jalur password DITOLAK di /auth/login.
-        # PIN (warisan Fase A) ikut ditutup untuk non-owner seperti sebelumnya (§40-B);
-        # owner tidak pernah dimatikan pintunya oleh sistem.
+        # google_terbukti_pada = catatan bahwa Google BENAR-BENAR pernah berhasil
+        # untuk akun ini (dipakai owner di /pengaturan sbg tanda "sudah teruji").
+        # pin_ditutup diteruskan seperti sebelumnya; owner tidak pernah ditutup.
         cur.execute(
             "UPDATE app_users SET last_login_at=%s, "
             "google_terbukti_pada = COALESCE(google_terbukti_pada, %s), "
@@ -170,12 +202,13 @@ def google_callback(request: Request, code: str = "", state: str = "", error: st
             (now, now, uid),
         )
         conn.commit()
+        print(f"[GOOGLE-LOGIN SUKSES] {email} role={role}", flush=True)
     finally:
         conn.close()
 
     token = security.create_access_token(uid, email, role)
-    # Token dikirim lewat FRAGMENT (#), bukan query string: fragment tidak pernah
-    # dikirim ke server -> tidak masuk log akses/proxy (pelajaran dari log Cantabile).
+    # Token lewat FRAGMENT (#) -- tidak pernah dikirim ke server, jadi tidak
+    # masuk log akses/proxy (koreksi terhadap Cantabile).
     r = RedirectResponse(f"/login#gtoken={token}", status_code=303)
     r.delete_cookie(google_login.GSTATE_COOKIE, path="/")
     return r
