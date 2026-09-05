@@ -5,6 +5,9 @@ import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Copy, KeyRound, Plus, ShieldCheck, UserCog } from "lucide-react";
 
+// Dipakai di beberapa dialog: aturan username sama persis dengan CHECK di DB.
+const POLA_USERNAME = /^[a-z0-9._]{3,30}$/;
+
 import { RequireAuth } from "@/components/require-auth";
 import { AppShell } from "@/components/app-shell";
 import { isUnauthorized, useAuth } from "@/lib/auth-context";
@@ -55,7 +58,7 @@ function PasswordSekaliDialog({
   data,
   onClose,
 }: {
-  data: { nama: string; email: string; password: string } | null;
+  data: { nama: string; email: string; username: string; password: string } | null;
   onClose: () => void;
 }) {
   async function salin() {
@@ -81,8 +84,9 @@ function PasswordSekaliDialog({
         </DialogHeader>
         <div className="flex flex-col gap-3">
           <div>
-            <Label className="text-xs text-muted-foreground">Email login</Label>
-            <p className="font-mono text-sm">{data?.email}</p>
+            <Label className="text-xs text-muted-foreground">Username login</Label>
+            <p className="font-mono text-sm">{data?.username}</p>
+            <p className="text-xs text-muted-foreground">{data?.email}</p>
           </div>
           <div>
             <Label className="text-xs text-muted-foreground">Password sementara</Label>
@@ -96,8 +100,8 @@ function PasswordSekaliDialog({
             </div>
           </div>
           <p className="text-xs text-muted-foreground">
-            Minta yang bersangkutan segera menggantinya sendiri lewat menu Pengaturan → Ganti
-            Password setelah login pertama.
+            Untuk Staf & Pengamat: password ini berlaku sampai yang bersangkutan berhasil masuk
+            lewat Google satu kali — setelah itu password otomatis tidak berlaku lagi.
           </p>
         </div>
         <DialogFooter>
@@ -115,32 +119,55 @@ function BuatAkunDialog({
 }: {
   open: boolean;
   onOpenChange: (v: boolean) => void;
-  onCreated: (hasil: { nama: string; email: string; password: string }) => void;
+  onCreated: (hasil: { nama: string; email: string; username: string; password: string }) => void;
 }) {
   const [email, setEmail] = React.useState("");
+  const [username, setUsername] = React.useState("");
   const [nama, setNama] = React.useState("");
   const [role, setRole] = React.useState<Role>("staff");
+  const [password, setPassword] = React.useState("");
+  const [izinGoogle, setIzinGoogle] = React.useState(true);
   const [submitting, setSubmitting] = React.useState(false);
 
   function reset() {
     setEmail("");
+    setUsername("");
     setNama("");
     setRole("staff");
+    setPassword("");
+    setIzinGoogle(true);
   }
 
   async function submit() {
-    if (!email.trim() || !nama.trim()) {
-      toast.error("Nama dan email wajib diisi.");
+    const u = username.trim().toLowerCase();
+    if (!email.trim() || !nama.trim() || !u) {
+      toast.error("Nama, username, dan email wajib diisi.");
+      return;
+    }
+    if (!POLA_USERNAME.test(u)) {
+      toast.error("Username 3–30 karakter: huruf kecil, angka, titik, atau underscore.");
+      return;
+    }
+    if (password && password.length < 8) {
+      toast.error("Password awal minimal 8 karakter (atau kosongkan agar dibuat sistem).");
       return;
     }
     setSubmitting(true);
     try {
-      const res = await createUser({ email: email.trim(), nama: nama.trim(), role });
+      const res = await createUser({
+        email: email.trim(),
+        username: u,
+        nama: nama.trim(),
+        role,
+        password: password || undefined,
+        login_via_google: izinGoogle,
+      });
       onOpenChange(false);
       reset();
       onCreated({
         nama: res.user.nama,
         email: res.user.email,
+        username: res.user.username,
         password: res.password_sementara,
       });
     } catch (err) {
@@ -156,7 +183,8 @@ function BuatAkunDialog({
         <DialogHeader>
           <DialogTitle>Buat Akun Baru</DialogTitle>
           <DialogDescription>
-            Password dibuat otomatis oleh sistem dan ditampilkan sekali setelah akun jadi.
+            Username dipakai untuk masuk. Password awal boleh Anda tentukan sendiri, atau
+            kosongkan agar dibuat sistem — ditampilkan sekali setelah akun jadi.
           </DialogDescription>
         </DialogHeader>
         <div className="flex flex-col gap-3">
@@ -170,15 +198,40 @@ function BuatAkunDialog({
             />
           </div>
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="email">Email (dipakai untuk login)</Label>
+            <Label htmlFor="username">Username (dipakai untuk login)</Label>
+            <Input
+              id="username"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              placeholder="mis. maya"
+              autoCapitalize="none"
+            />
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="email">Email (akun Google untuk &quot;Masuk dengan Google&quot;)</Label>
             <Input
               id="email"
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              placeholder="nama@contoh.com"
+              placeholder="nama@gmail.com"
             />
           </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="pw-awal">Password awal (opsional, min 8)</Label>
+            <Input
+              id="pw-awal"
+              type="text"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="kosongkan = dibuat sistem"
+              autoComplete="off"
+            />
+          </div>
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={izinGoogle} onChange={(e) => setIzinGoogle(e.target.checked)} />
+            Izinkan masuk lewat Google (email di atas harus terdaftar sebagai test user di Google Cloud Console)
+          </label>
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="role">Peran</Label>
             <Select value={role} onValueChange={(v) => setRole(v as Role)}>
@@ -221,21 +274,30 @@ function EditAkunDialog({
   onSaved: () => void;
 }) {
   const [nama, setNama] = React.useState("");
+  const [username, setUsername] = React.useState("");
   const [role, setRole] = React.useState<Role>("staff");
+  const [izinGoogle, setIzinGoogle] = React.useState(false);
   const [submitting, setSubmitting] = React.useState(false);
 
   React.useEffect(() => {
     if (target) {
       setNama(target.nama);
+      setUsername(target.username ?? "");
       setRole(target.role);
+      setIzinGoogle(!!target.login_via_google);
     }
   }, [target]);
 
   async function submit() {
     if (!target) return;
+    const u = username.trim().toLowerCase();
+    if (!POLA_USERNAME.test(u)) {
+      toast.error("Username 3–30 karakter: huruf kecil, angka, titik, atau underscore.");
+      return;
+    }
     setSubmitting(true);
     try {
-      await updateUser(target.id, { nama: nama.trim(), role });
+      await updateUser(target.id, { nama: nama.trim(), role, username: u, login_via_google: izinGoogle });
       toast.success("Akun diperbarui.");
       onOpenChange(false);
       onSaved();
@@ -259,6 +321,14 @@ function EditAkunDialog({
             <Input id="edit-nama" value={nama} onChange={(e) => setNama(e.target.value)} />
           </div>
           <div className="flex flex-col gap-1.5">
+            <Label htmlFor="edit-username">Username (untuk login)</Label>
+            <Input id="edit-username" value={username} onChange={(e) => setUsername(e.target.value)} autoCapitalize="none" />
+          </div>
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={izinGoogle} onChange={(e) => setIzinGoogle(e.target.checked)} />
+            Izinkan masuk lewat Google
+          </label>
+          <div className="flex flex-col gap-1.5">
             <Label htmlFor="edit-role">Peran</Label>
             <Select value={role} onValueChange={(v) => setRole(v as Role)}>
               <SelectTrigger id="edit-role">
@@ -278,6 +348,84 @@ function EditAkunDialog({
           </Button>
           <Button onClick={submit} disabled={submitting}>
             {submitting ? "Menyimpan..." : "Simpan"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** Reset password oleh owner (5 Sep 2026): owner boleh menentukan password awal
+ * sendiri atau membiarkan sistem membuatnya. Reset juga MEMBUKA kembali jalur
+ * password untuk Staf/Pengamat yang sudah terbukti Google (jalur pemulihan). */
+function ResetPasswordDialog({
+  target,
+  onOpenChange,
+  onDone,
+}: {
+  target: UserOut | null;
+  onOpenChange: (v: boolean) => void;
+  onDone: (hasil: { nama: string; email: string; username: string; password: string }) => void;
+}) {
+  const [password, setPassword] = React.useState("");
+  const [submitting, setSubmitting] = React.useState(false);
+
+  React.useEffect(() => {
+    if (target) setPassword("");
+  }, [target]);
+
+  async function submit() {
+    if (!target) return;
+    if (password && password.length < 8) {
+      toast.error("Password awal minimal 8 karakter (atau kosongkan agar dibuat sistem).");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const res = await resetUserPassword(target.id, password || undefined);
+      onOpenChange(false);
+      onDone({
+        nama: res.user.nama,
+        email: res.user.email,
+        username: res.user.username,
+        password: res.password_sementara,
+      });
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : "Gagal mereset password.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <Dialog open={target !== null} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Reset Password — {target?.nama}</DialogTitle>
+          <DialogDescription>
+            Password lama langsung tidak berlaku.
+            {target && target.role !== "owner" && target.google_terbukti_pada
+              ? " Akun ini sudah terbukti masuk lewat Google; reset akan membuka lagi jalur password sampai Google terbukti ulang."
+              : ""}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="flex flex-col gap-1.5">
+          <Label htmlFor="reset-pw">Password awal (opsional, min 8)</Label>
+          <Input
+            id="reset-pw"
+            type="text"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="kosongkan = dibuat sistem"
+            autoComplete="off"
+          />
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
+            Batal
+          </Button>
+          <Button onClick={submit} disabled={submitting}>
+            {submitting ? "Memproses..." : "Reset Password"}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -374,8 +522,9 @@ function PengaturanContent() {
   const [loading, setLoading] = React.useState(true);
   const [buatOpen, setBuatOpen] = React.useState(false);
   const [editTarget, setEditTarget] = React.useState<UserOut | null>(null);
+  const [resetTarget, setResetTarget] = React.useState<UserOut | null>(null);
   const [passwordBaru, setPasswordBaru] = React.useState<
-    { nama: string; email: string; password: string } | null
+    { nama: string; email: string; username: string; password: string } | null
   >(null);
 
   const load = React.useCallback(() => {
@@ -407,18 +556,6 @@ function PengaturanContent() {
     }
   }
 
-  async function reset(u: UserOut) {
-    try {
-      const res = await resetUserPassword(u.id);
-      setPasswordBaru({
-        nama: res.user.nama,
-        email: res.user.email,
-        password: res.password_sementara,
-      });
-    } catch (err) {
-      toast.error(err instanceof ApiError ? err.message : "Gagal mereset password.");
-    }
-  }
 
   return (
     <div className="flex flex-col gap-6">
@@ -452,9 +589,11 @@ function PengaturanContent() {
               <TableHeader>
                 <TableRow>
                   <TableHead>Nama</TableHead>
+                  <TableHead>Username</TableHead>
                   <TableHead>Email</TableHead>
                   <TableHead>Peran</TableHead>
                   <TableHead>Status</TableHead>
+                  <TableHead>Login</TableHead>
                   <TableHead>Login Terakhir</TableHead>
                   <TableHead className="text-right">Aksi</TableHead>
                 </TableRow>
@@ -462,13 +601,13 @@ function PengaturanContent() {
               <TableBody>
                 {loading ? (
                   <TableRow>
-                    <TableCell colSpan={6} className="text-center text-muted-foreground">
+                    <TableCell colSpan={8} className="text-center text-muted-foreground">
                       Memuat...
                     </TableCell>
                   </TableRow>
                 ) : users.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={6} className="text-center text-muted-foreground">
+                    <TableCell colSpan={8} className="text-center text-muted-foreground">
                       Belum ada akun lain.
                     </TableCell>
                   </TableRow>
@@ -481,6 +620,7 @@ function PengaturanContent() {
                           <span className="ml-2 text-xs text-muted-foreground">(Anda)</span>
                         ) : null}
                       </TableCell>
+                      <TableCell className="font-mono text-xs">{u.username}</TableCell>
                       <TableCell className="font-mono text-xs">{u.email}</TableCell>
                       <TableCell>
                         {u.role === "owner" ? (
@@ -500,6 +640,17 @@ function PengaturanContent() {
                           <Badge variant="outline">Nonaktif</Badge>
                         )}
                       </TableCell>
+                      <TableCell className="text-xs">
+                        {u.google_terbukti_pada ? (
+                          <Badge variant="success" title={`Google terbukti ${formatDate(u.google_terbukti_pada)}`}>
+                            {u.role === "owner" ? "Google + password" : "Google saja"}
+                          </Badge>
+                        ) : u.login_via_google ? (
+                          <Badge variant="outline">Password · Google diizinkan</Badge>
+                        ) : (
+                          <Badge variant="outline">Password saja</Badge>
+                        )}
+                      </TableCell>
                       <TableCell className="text-xs text-muted-foreground">
                         {u.last_login_at ? formatDate(u.last_login_at) : "belum pernah"}
                       </TableCell>
@@ -508,7 +659,7 @@ function PengaturanContent() {
                           <Button variant="outline" size="sm" onClick={() => setEditTarget(u)}>
                             Ubah
                           </Button>
-                          <Button variant="outline" size="sm" onClick={() => reset(u)}>
+                          <Button variant="outline" size="sm" onClick={() => setResetTarget(u)}>
                             Reset Password
                           </Button>
                           <Button
@@ -549,6 +700,14 @@ function PengaturanContent() {
         target={editTarget}
         onOpenChange={(v) => !v && setEditTarget(null)}
         onSaved={load}
+      />
+      <ResetPasswordDialog
+        target={resetTarget}
+        onOpenChange={(v) => !v && setResetTarget(null)}
+        onDone={(hasil) => {
+          setPasswordBaru(hasil);
+          load();
+        }}
       />
       <PasswordSekaliDialog data={passwordBaru} onClose={() => setPasswordBaru(null)} />
     </div>

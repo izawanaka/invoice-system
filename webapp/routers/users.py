@@ -6,24 +6,27 @@ SEMUA endpoint di sini WAJIB owner (dependency security.require_owner). Staf
 tidak boleh melihat daftar akun, apalagi membuat/mereset akun.
 
 Keputusan owner yang dikodekan di sini:
-  - Akun staf boleh melakukan APA SAJA di operasional (catat PO, unggah scan PO,
-    unggah BAP, terbitkan invoice, unggah faktur pajak, cetak paket) KECUALI
-    hal yang menyangkut PELUNASAN invoice -- lihat security.boleh_lihat_pelunasan()
-    dan penerapannya di routers/invoices.py & routers/po.py.
-  - Akun TIDAK PERNAH DIHAPUS, hanya dinonaktifkan. Alasannya bukan kenyamanan:
-    app_audit_log punya FK ke app_users(id), jadi menghapus user akan memutus
-    jejak "siapa mengubah apa" pada data finansial yang sudah terjadi.
-  - Password dibuat SISTEM (acak kuat) dan ditampilkan SEKALI di respons untuk
-    disalin owner. Yang disimpan cuma hash bcrypt -- password mentah tidak
-    pernah ditulis ke DB, ke berkas, maupun ke log/audit.
+  - Akun staf boleh melakukan APA SAJA di operasional KECUALI hal yang menyangkut
+    PELUNASAN invoice -- lihat security.boleh_lihat_pelunasan().
+  - Akun TIDAK PERNAH DIHAPUS, hanya dinonaktifkan (app_audit_log punya FK ke
+    app_users(id); menghapus user memutus jejak "siapa mengubah apa").
+  - Yang disimpan cuma hash bcrypt -- password mentah tidak pernah ditulis ke DB,
+    ke berkas, maupun ke log/audit.
 
-Rencana lanjutan (belum dibangun): owner berencana menyambungkan login ke Google
-Authenticator. Skema saat ini sengaja tidak menghalangi itu -- penambahan nanti
-cukup 1 kolom rahasia TOTP di app_users + langkah verifikasi kedua di
-routers/auth.py, tanpa mengubah endpoint di file ini.
+Ditambah 5 Sep 2026 (keputusan owner, gaya Cantabile):
+  - USERNAME: identitas yang diketik saat login. Diatur owner di /pengaturan.
+    Unik (case-insensitive), 3-30 karakter huruf kecil/angka/titik/underscore.
+    Email tetap identitas internal + identitas Google.
+  - PASSWORD AWAL BOLEH DIINPUT OWNER (Buat Akun & Reset Password). Kosong ->
+    sistem tetap membuat acak seperti sebelumnya. Minimal 8 karakter.
+  - login_via_google = IZIN masuk lewat Google, bisa diubah owner.
+  - RESET PASSWORD MENGOSONGKAN google_terbukti_pada: ini jalur pemulihan. Untuk
+    staff/viewer yang sudah terbukti Google, password ditolak (routers/auth.py);
+    reset oleh owner membuat password awal berlaku lagi sampai Google terbukti ulang.
 """
+import re
 import secrets
-from typing import List
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
@@ -41,17 +44,43 @@ router = APIRouter(prefix="/users", tags=["users"])
 _ALFABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
 _PANJANG_PASSWORD = 14
 
-_KOLOM = "id, email, nama, role, aktif, created_at, last_login_at"
+_KOLOM = ("id, email, nama, role, aktif, created_at, last_login_at, "
+          "username, login_via_google, google_terbukti_pada")
+
+_POLA_USERNAME = re.compile(r"^[a-z0-9._]{3,30}$")
 
 
 def _buat_password() -> str:
     return "".join(secrets.choice(_ALFABET) for _ in range(_PANJANG_PASSWORD))
 
 
+def _normalisasi_username(u: str) -> str:
+    """Lowercase + trim; tolak kalau tidak sesuai pola (sama dengan CHECK di DB)."""
+    u = (u or "").strip().lower()
+    if not _POLA_USERNAME.match(u):
+        raise HTTPException(
+            status_code=400,
+            detail="Username harus 3-30 karakter: huruf kecil, angka, titik, atau underscore.",
+        )
+    return u
+
+
+def _cek_username_unik(conn, username: str, kecuali_id: Optional[int] = None):
+    cur = conn.cursor()
+    if kecuali_id is None:
+        cur.execute("SELECT id FROM app_users WHERE lower(username) = %s", (username,))
+    else:
+        cur.execute("SELECT id FROM app_users WHERE lower(username) = %s AND id <> %s",
+                    (username, kecuali_id))
+    if cur.fetchone() is not None:
+        raise HTTPException(status_code=409, detail=f"Username '{username}' sudah dipakai akun lain")
+
+
 def _baris_ke_out(r) -> schemas.UserOut:
     return schemas.UserOut(
         id=r[0], email=r[1], nama=r[2], role=r[3], aktif=r[4],
         created_at=r[5], last_login_at=r[6],
+        username=r[7], login_via_google=bool(r[8]), google_terbukti_pada=r[9],
     )
 
 
@@ -66,12 +95,7 @@ def _ambil(conn, user_id: int):
 
 def _jumlah_owner_aktif(conn, kecuali_id: int = None) -> int:
     """Berapa owner aktif yang tersisa kalau akun `kecuali_id` tidak dihitung.
-
-    Dipakai sebagai pengaman: sistem TIDAK BOLEH sampai kehilangan owner aktif
-    terakhir, karena hanya owner yang bisa mengelola akun -- kalau itu terjadi,
-    tidak ada jalan masuk lagi lewat aplikasi (harus dibetulkan manual lewat SQL
-    di server).
-    """
+    Pengaman: sistem TIDAK BOLEH kehilangan owner aktif terakhir."""
     cur = conn.cursor()
     if kecuali_id is None:
         cur.execute("SELECT count(*) FROM app_users WHERE role = 'owner' AND aktif = true")
@@ -100,21 +124,26 @@ def create_user(
     user: security.CurrentUser = Depends(security.require_owner),
 ):
     email = body.email.strip().lower()
+    username = _normalisasi_username(body.username)
     cur = conn.cursor()
     cur.execute("SELECT id FROM app_users WHERE lower(email) = %s", (email,))
     if cur.fetchone() is not None:
         raise HTTPException(status_code=409, detail=f"Email {email} sudah dipakai akun lain")
+    _cek_username_unik(conn, username)
 
-    password = _buat_password()
+    password = body.password if body.password else _buat_password()
     cur.execute(
-        "INSERT INTO app_users (email, password_hash, nama, role, aktif) "
-        "VALUES (%s, %s, %s, %s, true) RETURNING " + _KOLOM,
-        (email, security.hash_password(password), body.nama.strip(), body.role),
+        "INSERT INTO app_users (email, username, password_hash, nama, role, aktif, login_via_google) "
+        "VALUES (%s, %s, %s, %s, %s, true, %s) RETURNING " + _KOLOM,
+        (email, username, security.hash_password(password), body.nama.strip(), body.role,
+         bool(body.login_via_google)),
     )
     row = cur.fetchone()
     # Audit sengaja TIDAK memuat password -- hanya fakta bahwa akun dibuat.
     log_audit(conn, user.id, "create_user", "app_users", row[0],
-              {"email": email, "role": body.role})
+              {"email": email, "username": username, "role": body.role,
+               "login_via_google": bool(body.login_via_google),
+               "password_manual": bool(body.password)})
     conn.commit()
     return schemas.UserCreateResult(user=_baris_ke_out(row), password_sementara=password)
 
@@ -152,17 +181,27 @@ def update_user(
     if not nama_baru:
         raise HTTPException(status_code=400, detail="Nama tidak boleh kosong")
 
+    username_baru = row[7]
+    if body.username is not None:
+        username_baru = _normalisasi_username(body.username)
+        if username_baru != (row[7] or "").lower():
+            _cek_username_unik(conn, username_baru, kecuali_id=user_id)
+
+    lvg_baru = body.login_via_google if body.login_via_google is not None else bool(row[8])
+
     cur = conn.cursor()
     cur.execute(
-        "UPDATE app_users SET nama = %s, role = %s, aktif = %s WHERE id = %s RETURNING " + _KOLOM,
-        (nama_baru, role_baru, aktif_baru, user_id),
+        "UPDATE app_users SET nama = %s, role = %s, aktif = %s, username = %s, "
+        "login_via_google = %s WHERE id = %s RETURNING " + _KOLOM,
+        (nama_baru, role_baru, aktif_baru, username_baru, lvg_baru, user_id),
     )
     baru = cur.fetchone()
     if cur.rowcount != 1:
         conn.rollback()
         raise HTTPException(status_code=500, detail="rowcount != 1, dibatalkan demi keamanan data")
     log_audit(conn, user.id, "update_user", "app_users", user_id,
-              {"nama": nama_baru, "role": role_baru, "aktif": aktif_baru})
+              {"nama": nama_baru, "role": role_baru, "aktif": aktif_baru,
+               "username": username_baru, "login_via_google": lvg_baru})
     conn.commit()
     return _baris_ke_out(baru)
 
@@ -170,24 +209,34 @@ def update_user(
 @router.post("/{user_id}/reset-password", response_model=schemas.UserCreateResult)
 def reset_password(
     user_id: int,
+    body: Optional[schemas.ResetPasswordRequest] = None,
     conn=Depends(get_db),
     user: security.CurrentUser = Depends(security.require_owner),
 ):
-    """Terbitkan password baru untuk akun tsb. Password lama langsung tidak
-    berlaku. Token JWT yang sudah terlanjur dipegang user itu TIDAK otomatis
-    mati -- kalau tujuannya mencabut akses (bukan sekadar lupa password),
-    nonaktifkan akunnya, karena get_current_user memeriksa kolom `aktif` di
-    setiap request."""
+    """Terbitkan password baru untuk akun tsb (diinput owner, atau acak kalau
+    kosong). Password lama langsung tidak berlaku.
+
+    JALUR PEMULIHAN GATE GOOGLE (5 Sep 2026): google_terbukti_pada DIKOSONGKAN,
+    sehingga staff/viewer yang sebelumnya hanya bisa masuk lewat Google boleh
+    memakai password awal ini lagi -- sampai Google terbukti ulang.
+
+    Token JWT yang sudah terlanjur dipegang user itu TIDAK otomatis mati --
+    kalau tujuannya mencabut akses, nonaktifkan akunnya."""
     row = _ambil(conn, user_id)
-    password = _buat_password()
+    manual = bool(body and body.password)
+    password = body.password if manual else _buat_password()
     cur = conn.cursor()
     cur.execute(
-        "UPDATE app_users SET password_hash = %s WHERE id = %s",
+        "UPDATE app_users SET password_hash = %s, google_terbukti_pada = NULL "
+        "WHERE id = %s RETURNING " + _KOLOM,
         (security.hash_password(password), user_id),
     )
+    baru = cur.fetchone()
     if cur.rowcount != 1:
         conn.rollback()
         raise HTTPException(status_code=500, detail="rowcount != 1, dibatalkan demi keamanan data")
-    log_audit(conn, user.id, "reset_password", "app_users", user_id, {"email": row[1]})
+    log_audit(conn, user.id, "reset_password", "app_users", user_id,
+              {"email": row[1], "username": row[7], "password_manual": manual,
+               "google_terbukti_dibuka": row[9] is not None})
     conn.commit()
-    return schemas.UserCreateResult(user=_baris_ke_out(row), password_sementara=password)
+    return schemas.UserCreateResult(user=_baris_ke_out(baru), password_sementara=password)

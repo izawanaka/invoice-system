@@ -11,18 +11,11 @@ from pydantic import BaseModel, EmailStr, Field, model_validator
 
 # ---------- Auth ----------
 class LoginRequest(BaseModel):
-    email: EmailStr
+    """Login pakai USERNAME (keputusan owner 5 Sep 2026: "input-nya cuma username,
+    di belakangnya tetap email", gaya Cantabile). Email TIDAK diterima di sini.
+    Jalur PIN+OTP (LoginPinStart/LoginOtpVerify) dihapus -- endpointnya 410."""
+    username: str = Field(min_length=1, max_length=64)
     password: str
-
-
-class LoginPinStart(BaseModel):
-    email: EmailStr
-    pin: str = Field(min_length=1)
-
-
-class LoginOtpVerify(BaseModel):
-    email: EmailStr
-    kode: str = Field(min_length=1)
 
 
 class LoginResponse(BaseModel):
@@ -36,6 +29,7 @@ class MeResponse(BaseModel):
     email: str
     nama: str
     role: str
+    username: Optional[str] = None
 
 
 class ChangePasswordRequest(BaseModel):
@@ -47,17 +41,25 @@ class ChangePasswordRequest(BaseModel):
 class UserOut(BaseModel):
     id: int
     email: str
+    username: str
     nama: str
     role: str
     aktif: bool
     created_at: Optional[datetime] = None
     last_login_at: Optional[datetime] = None
+    # 5 Sep 2026: izin Google (diatur owner) & bukti Google (diisi sistem saat sukses)
+    login_via_google: bool = False
+    google_terbukti_pada: Optional[datetime] = None
 
 
 class UserCreateRequest(BaseModel):
     email: EmailStr
+    username: str = Field(min_length=3, max_length=30)
     nama: str = Field(min_length=1)
     role: str = Field(default="staff", pattern="^(owner|staff|viewer)$")
+    # Password awal boleh diinput owner (5 Sep 2026); kosong -> sistem buat acak.
+    password: Optional[str] = Field(default=None, min_length=8, max_length=128)
+    login_via_google: bool = False
 
 
 class UserCreateResult(BaseModel):
@@ -72,6 +74,14 @@ class UserUpdateRequest(BaseModel):
     nama: Optional[str] = None
     role: Optional[str] = Field(default=None, pattern="^(owner|staff|viewer)$")
     aktif: Optional[bool] = None
+    username: Optional[str] = Field(default=None, min_length=3, max_length=30)
+    login_via_google: Optional[bool] = None
+
+
+class ResetPasswordRequest(BaseModel):
+    """Body opsional utk POST /users/{id}/reset-password. password kosong ->
+    sistem membuat acak (perilaku lama)."""
+    password: Optional[str] = Field(default=None, min_length=8, max_length=128)
 
 
 # ---------- Badan usaha ----------

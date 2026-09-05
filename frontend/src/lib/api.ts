@@ -119,10 +119,11 @@ async function request<T>(
 }
 
 // ---------- Auth ----------
-export function login(email: string, password: string) {
+// 5 Sep 2026: yang dikirim USERNAME (bukan email), gaya Cantabile.
+export function login(username: string, password: string) {
   return request<LoginResponse>("/auth/login", {
     method: "POST",
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify({ username, password }),
     auth: false,
   });
 }
@@ -157,9 +158,11 @@ export function updateUser(userId: number, body: UserUpdateRequest) {
   });
 }
 
-export function resetUserPassword(userId: number) {
+// password opsional: diinput owner (min 8). Kosong -> sistem buat acak.
+export function resetUserPassword(userId: number, password?: string) {
   return request<UserCreateResult>(`/users/${userId}/reset-password`, {
     method: "POST",
+    body: JSON.stringify(password ? { password } : {}),
   });
 }
 
@@ -438,31 +441,7 @@ export async function downloadResi(noInvoice: string): Promise<Blob> {
   return res.blob();
 }
 
-// ---------- Auth: Login Email + PIN + OTP (Fase A) ----------
-export interface LoginStartResponse {
-  ok: boolean;
-  otp_terkirim: boolean;
-  email: string;
-  ttl_menit: number;
-  pesan: string;
-}
-
-export function loginStart(email: string, pin: string) {
-  return request<LoginStartResponse>("/auth/login/start", {
-    method: "POST",
-    body: JSON.stringify({ email, pin }),
-    auth: false,
-  });
-}
-
-export function loginVerify(email: string, kode: string) {
-  return request<LoginResponse>("/auth/login/verify", {
-    method: "POST",
-    body: JSON.stringify({ email, kode }),
-    auth: false,
-  });
-}
-
+// (Blok login Email+PIN+OTP Fase A DIHAPUS 5 Sep 2026 -- endpoint backend 410.)
 
 // ---------- Faktur Pajak (Fase 3, 30 Jul 2026) ----------
 export function ocrExtractFaktur(file: File, badanUsahaKode: string) {

@@ -12,29 +12,39 @@ export interface MeResponse {
   email: string;
   nama: string;
   role: Role;
+  username?: string | null;
 }
 
 // Kelola akun (halaman Pengaturan). Mengikuti webapp/schemas.py.
 export interface UserOut {
   id: number;
   email: string;
+  username: string;
   nama: string;
   role: Role;
   aktif: boolean;
   created_at?: string | null;
   last_login_at?: string | null;
+  // 5 Sep 2026: izin Google (diatur owner) & bukti Google (diisi sistem)
+  login_via_google: boolean;
+  google_terbukti_pada?: string | null;
 }
 
 export interface UserCreateRequest {
   email: string;
+  username: string;
   nama: string;
   role: Role;
+  password?: string; // opsional: password awal diinput owner (min 8)
+  login_via_google?: boolean;
 }
 
 export interface UserUpdateRequest {
   nama?: string;
   role?: Role;
   aktif?: boolean;
+  username?: string;
+  login_via_google?: boolean;
 }
 
 // password_sementara hanya ada di respons pembuatan/reset akun -- tidak bisa

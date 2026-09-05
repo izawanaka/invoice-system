@@ -9,7 +9,7 @@ import type { MeResponse } from "./types";
 interface AuthState {
   user: MeResponse | null;
   loading: boolean; // true selama pengecekan token awal berlangsung
-  login: (email: string, password: string) => Promise<void>;
+  login: (username: string, password: string) => Promise<void>;
   logout: () => void;
 }
 
@@ -42,8 +42,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       .finally(() => setLoading(false));
   }, []);
 
-  const login = React.useCallback(async (email: string, password: string) => {
-    const res = await apiLogin(email, password);
+  const login = React.useCallback(async (username: string, password: string) => {
+    const res = await apiLogin(username, password);
     setToken(res.access_token);
     setUser(res.user);
   }, []);

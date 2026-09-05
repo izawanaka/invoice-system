@@ -41,11 +41,13 @@ def create_access_token(user_id: int, email: str, role: str) -> str:
 
 
 class CurrentUser:
-    def __init__(self, user_id: int, email: str, role: str, nama: str):
+    def __init__(self, user_id: int, email: str, role: str, nama: str,
+                 username: Optional[str] = None):
         self.id = user_id
         self.email = email
         self.role = role
         self.nama = nama
+        self.username = username  # identitas yang diketik saat login (5 Sep 2026)
 
     @property
     def is_owner(self) -> bool:
@@ -90,7 +92,7 @@ def get_current_user(
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT id, email, role, nama, aktif FROM app_users WHERE id = %s",
+            "SELECT id, email, role, nama, aktif, username FROM app_users WHERE id = %s",
             (int(user_id),),
         )
         row = cur.fetchone()
@@ -100,7 +102,7 @@ def get_current_user(
     if row is None or not row[4]:
         raise _unauthorized("User tidak ditemukan atau sudah dinonaktifkan")
 
-    return CurrentUser(user_id=row[0], email=row[1], role=row[2], nama=row[3])
+    return CurrentUser(user_id=row[0], email=row[1], role=row[2], nama=row[3], username=row[5])
 
 
 def boleh_lihat_pelunasan(user: CurrentUser) -> bool:
