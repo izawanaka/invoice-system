@@ -693,8 +693,9 @@ def upah_batal(row_id: int, body: BatalIn, conn=Depends(get_db),
 @router.get("/hpp")
 def hpp_bulanan(conn=Depends(get_db), user: security.CurrentUser = Depends(security.require_owner)):
     cur = conn.cursor()
-    cur.execute("SELECT bulan, biaya_kas, sak_lolos_qc FROM v_ops_hpp_bulanan ORDER BY bulan DESC")
-    return [{"bulan": r[0], "biaya_kas": _num(r[1]), "sak_lolos_qc": r[2],
+    # PABRIK_B7_9SEP2026 (A5): kas keluar tanpa foto nota dikecualikan dari HPP, dilaporkan terpisah
+    cur.execute("SELECT bulan, biaya_kas, sak_lolos_qc, biaya_tanpa_nota FROM v_ops_hpp_bulanan ORDER BY bulan DESC")
+    return [{"bulan": r[0], "biaya_kas": _num(r[1]), "sak_lolos_qc": r[2], "biaya_tanpa_nota": _num(r[3]),
              "hpp_per_sak": round(_num(r[1]) / r[2], 2) if r[2] else None} for r in cur.fetchall()]
 
 

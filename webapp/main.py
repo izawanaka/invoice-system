@@ -19,7 +19,7 @@ import settings  # HARUS diimpor PALING AWAL -- ini yang menambahkan folder kode
                  # di bawah ini (termasuk semua routers/*) bergantung pada urutan ini.
 import db_helper
 import security
-from routers import auth, badan_usaha, bap, dokumen, faktur_pajak, invoices, mitra, ops, ops_bonus, ops_operasional, paperless, pembayaran, po, resi, users
+from routers import auth, badan_usaha, bap, dokumen, faktur_pajak, invoices, mitra, ops, ops_audit, ops_bonus, ops_operasional, paperless, pembayaran, po, resi, users
 
 app = FastAPI(
     title="Invoice Web Dashboard API",
@@ -109,6 +109,7 @@ app.include_router(pembayaran.router)
 app.include_router(ops.router)  # workspace Pabrik
 app.include_router(ops_operasional.router)  # PABRIK_B2_9SEP2026
 app.include_router(ops_bonus.router)  # PABRIK_B5_9SEP2026
+app.include_router(ops_audit.router)  # PABRIK_B7_9SEP2026: opname, tutup hari, audit A1-A10
 
 
 @app.get("/health")

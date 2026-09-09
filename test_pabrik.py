@@ -10,6 +10,7 @@ tempat penghapusan akun dibenarkan: akun uji, data uji.
 B1: peran admin/kepala, penjaga global (403 ke semua endpoint invoice), parameter
 effective-dated, master pemasok/petak/karyawan.
 B2-B4 (uji E): lot/tahap, terima truk, produksi atomik, sak kosong, kas kecil, upah, cuaca.
+B7 (uji G): stock opname (owner), tutup hari, audit A1-A10 (idempoten, penjelasan, tutup, terima potongan).
 """
 import json
 import os
@@ -109,6 +110,7 @@ def main():
     t_kepala = token(conn, ids["kepala"])
     t_staf = token(conn, ids["staff"])
     owner_param_id = None
+    g_mulai = None
     try:
         print("== A. Peran & penjaga global (K1, K2, K3)")
         cur.execute("SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname='app_users_role_check'")
@@ -377,6 +379,88 @@ def main():
         s, b = req("GET", "/ops/rasio-kks", t_owner)
         check("F20 rasio KKS owner 200, parameter_saat_ini None", s == 200 and b.get("parameter_saat_ini") is None, (s, b))
 
+
+        print("== G. Stock opname, tutup hari, audit A1-A10 (B7)")  # PABRIK_B7_9SEP2026
+        from datetime import date as _date, timedelta as _td
+        cur.execute("SELECT now()")
+        g_mulai = cur.fetchone()[0]
+        _y, _m = int(bulan_bap[:4]), int(bulan_bap[5:])
+        tgl_opname = (_date(_y, _m, 1) - _td(days=1)).isoformat()  # bulan sebelum bulan_bap (rekapnya sudah beku)
+        s, _ = req("POST", "/ops/opname", t_kepala, {"tanggal": tgl_opname, "jenis": "sak_kosong", "nilai_terukur": 10})
+        check("G1 kepala stock opname ditolak (403, owner saja)", s == 403, s)
+        req("POST", "/ops/produksi", t_kepala, {"tanggal": "2026-09-10", "lot_id": lot2, "jumlah_sak": 5})  # stok jadi utk G3/G6
+        s0, sal0 = req("GET", "/ops/saldo", t_owner)
+        sk0, sj0 = sal0.get("sak_kosong"), sal0.get("stok_jadi")
+        s, b = req("POST", "/ops/opname", t_owner, {"tanggal": tgl_opname, "jenis": "sak_kosong", "nilai_terukur": sk0 - 3, "disaksikan_oleh": "UJI saksi", "catatan": "UJI opname sak"})
+        op_sak = b.get("id") if s == 201 else None
+        s2, sal = req("GET", "/ops/saldo", t_owner)
+        cur.execute("SELECT jenis, delta FROM ops_sak_kosong_mutasi WHERE id=%s", (b.get("ref_mutasi_id") or 0,))
+        mut = cur.fetchone()
+        check("G2 opname sak kosong fisik-3: selisih -3, ledger 'opname' delta -3, saldo turun 3 (P2)",
+              s == 201 and b.get("selisih") == -3.0 and b.get("nilai_sistem") == float(sk0) and mut == ("opname", -3) and sal.get("sak_kosong") == sk0 - 3, (s, b, mut, sal))
+        s, b = req("POST", "/ops/opname", t_owner, {"tanggal": tgl_opname, "jenis": "stok_jadi", "nilai_terukur": sj0, "catatan": "UJI opname stok"})
+        check("G3 opname stok jadi cocok: selisih 0, tanpa ledger (ref_mutasi_id None)", s == 201 and b.get("selisih") == 0.0 and b.get("ref_mutasi_id") is None, (s, b))
+        s, b = req("POST", "/ops/opname", t_owner, {"tanggal": tgl_opname, "jenis": "petak", "objek_id": lot2, "nilai_terukur": 1.5, "catatan": "UJI opname petak"})
+        s2, _ = req("POST", "/ops/opname", t_owner, {"tanggal": tgl_opname, "jenis": "petak", "objek_id": lot_id, "nilai_terukur": 1})
+        s3, _ = req("POST", "/ops/opname", t_owner, {"tanggal": "2099-01-01", "jenis": "stok_jadi", "nilai_terukur": 1})
+        check("G4 opname petak lot aktif dicatat (K9, tanpa ledger); lot habis 409; tanggal depan 422",
+              s == 201 and b.get("objek") and b.get("ref_mutasi_id") is None and s2 == 409 and s3 == 422, (s, b, s2, s3))
+        hari_ini = _date.today().isoformat()
+        s, b = req("POST", "/ops/tutup-hari", t_admin, {"tanggal": hari_ini, "catatan": "UJI tutup"})
+        th_id = b.get("id") if s == 201 else None
+        s2, _ = req("POST", "/ops/tutup-hari", t_kepala, {"tanggal": hari_ini})
+        s3, _ = req("POST", "/ops/tutup-hari", t_kepala, {"tanggal": "2099-01-01"})
+        s4, rg = req("GET", "/ops/tutup-hari/ringkasan", t_kepala)
+        check("G5 admin tutup hari (201, ringkasan ada saldo); kepala tutup lagi 409; hari depan 422; ringkasan sudah_ditutup",
+              s == 201 and "saldo_kas" in b.get("ringkasan", {}) and s2 == 409 and s3 == 422 and s4 == 200 and rg.get("sudah_ditutup") is True, (s, s2, s3, s4, rg))
+        s, _ = req("POST", "/ops/kas", t_owner, {"tanggal": "2026-09-08", "jenis": "isi_ulang", "nominal": 100000, "keterangan": "UJI isi ulang 2"})
+        s, b = req("POST", "/ops/kas", t_admin, {"tanggal": "2026-09-09", "jenis": "keluar", "kategori": "bbm", "nominal": 40000, "keterangan": "UJI bbm tanpa nota"})
+        kas_tanpa_nota = b.get("id") if s == 201 else None
+        tgl_lama = (_date.today() - _td(days=40)).isoformat()
+        s2, b2 = req("POST", "/ops/pengiriman", t_admin, {"tanggal": tgl_lama, "no_surat_jalan": "UJI-SJ-LAMA", "jumlah_sak": 2, "tujuan_kode": "T3", "catatan": "UJI"})
+        sj_lama = b2.get("id") if s2 == 201 else None
+        check("G6 persiapan audit: kas keluar tanpa nota (201), SJ 40 hari lalu belum tertaut (201)", s == 201 and s2 == 201, (s, b, s2, b2))
+        s, _ = req("POST", "/ops/audit/jalankan?kirim=false", t_admin)
+        check("G7 admin jalankan audit ditolak (403)", s == 403, s)
+        s, ha = req("POST", "/ops/audit/jalankan?kirim=false", t_owner)
+        baru = {(t["kode"], t.get("ref_id")): t for t in ha.get("baru", [])} if s == 200 else {}
+        check("G8 owner jalankan audit: A1 lot rendemen 1.0, A3 usulan 3 sak, A5 kas tanpa nota, A9 SJ lama",
+              s == 200 and ("A1", lot_id) in baru and baru.get(("A3", op_sak), {}).get("usulan_potongan_sak") == 3
+              and ("A5", kas_tanpa_nota) in baru and ("A9", sj_lama) in baru and ha.get("telegram_terkirim") is None,
+              (s, sorted(baru.keys())))
+        s, tb = req("GET", "/ops/audit?status=terbuka", t_kepala)
+        teks = json.dumps(tb) if s == 200 else ""
+        check("G9 kepala baca temuan terbuka (200), tanpa kolom terlarang (P7), laporan berjudul Audit Pabrik",
+              s == 200 and len(tb) >= 4 and not any(k in teks for k in KOLOM_TERLARANG) and ha.get("laporan", "").startswith("🏭 Audit Pabrik"), (s, len(tb)))
+        id_a1 = baru[("A1", lot_id)]["id"]
+        id_a3 = baru[("A3", op_sak)]["id"]
+        id_a5 = baru[("A5", kas_tanpa_nota)]["id"]
+        s, b = req("POST", f"/ops/audit/{id_a1}/penjelasan", t_kepala, {"penjelasan": "UJI sabut basah, jemur terganggu hujan"})
+        s2, _ = req("POST", f"/ops/audit/{id_a1}/tutup", t_kepala, {"catatan": "UJI"})
+        s3, b3 = req("POST", f"/ops/audit/{id_a1}/tutup", t_owner, {"catatan": "UJI diterima"})
+        s4, _ = req("POST", f"/ops/audit/{id_a1}/tutup", t_owner, {"catatan": "UJI lagi"})
+        check("G10 kepala tulis penjelasan A1 (200); kepala tutup 403; owner tutup 200; tutup kedua 409",
+              s == 200 and b.get("penjelasan", "").startswith("UJI") and s2 == 403 and s3 == 200 and b3.get("status") == "ditutup" and s4 == 409, (s, s2, s3, s4))
+        s, b = req("POST", f"/ops/audit/{id_a3}/terima-potongan", t_owner, {})
+        cur.execute("SELECT bulan, sebab, sak, ref_id FROM ops_potongan WHERE id=%s", (b.get("potongan_id") or 0,))
+        pot = cur.fetchone()
+        s2, _ = req("POST", f"/ops/opname/{op_sak}/batal", t_owner, {"alasan": "UJI"})
+        check("G11 owner terima usulan A3 -> potongan opname_sak 3 sak bulan opname merujuk opname; opname tak bisa dibatalkan setelah jadi potongan (409)",
+              s == 201 and pot == (tgl_opname[:7], "opname_sak", 3, op_sak) and s2 == 409, (s, b, pot, s2))
+        s, _ = req("POST", f"/ops/kas/{kas_tanpa_nota}/batal", t_admin, {"alasan": "UJI salah"})
+        s2, ha2 = req("POST", "/ops/audit/jalankan?kirim=false", t_owner)
+        sel = {x["id"] for x in ha2.get("selesai_otomatis", [])} if s2 == 200 else set()
+        cur.execute("SELECT status FROM ops_audit_temuan WHERE id=%s", (id_a5,))
+        st5 = cur.fetchone()[0]
+        n_baru_ulang = [t for t in ha2.get("baru", []) if t["kode"] in ("A1", "A3", "A5", "A9") and t.get("ref_id") in (lot_id, op_sak, kas_tanpa_nota, sj_lama)]
+        check("G12 audit ulang idempoten: A5 selesai_otomatis setelah kas dibatalkan, temuan lama tidak digandakan",
+              s == 200 and s2 == 200 and id_a5 in sel and st5 == "selesai_otomatis" and not n_baru_ulang, (s, s2, sel, st5, [(t["kode"], t.get("ref_id")) for t in n_baru_ulang]))
+        s, b = req("GET", "/ops/hpp", t_owner)
+        check("G13 HPP punya kolom biaya_tanpa_nota (A5)", s == 200 and isinstance(b, list) and (not b or "biaya_tanpa_nota" in b[0]), (s, b[:1] if isinstance(b, list) else b))
+        s, b = req("POST", f"/ops/tutup-hari/{th_id}/batal", t_kepala, {"alasan": "UJI"})
+        s2, rg = req("GET", "/ops/tutup-hari/ringkasan", t_admin)
+        check("G14 batal tutup hari (P1 tandai) -> ringkasan sudah_ditutup false", s == 200 and b.get("dibatalkan") is True and rg.get("sudah_ditutup") is False, (s, rg))
+
         print("== D. Invoice tidak tersentuh (K1)")
         cur.execute("SELECT count(*) FROM invoices")
         n_inv = cur.fetchone()[0]
@@ -389,6 +473,15 @@ def main():
         check("D2 tabel invoice utuh (PO/BAP/INV > 0)", n_po > 0 and n_bap > 0 and n_inv > 0, (n_po, n_bap, n_inv))
     finally:
 
+        # PABRIK_B7_9SEP2026: bersihkan opname / tutup hari / temuan audit uji
+        cur.execute("DELETE FROM ops_potongan WHERE ref_tabel='ops_stock_opname' AND ref_id IN (SELECT id FROM ops_stock_opname WHERE catatan LIKE 'UJI%%')")
+        if g_mulai:
+            cur.execute("DELETE FROM ops_audit_temuan WHERE created_at >= %s", (g_mulai,))
+        cur.execute("DELETE FROM ops_stock_opname WHERE catatan LIKE 'UJI%%'")
+        cur.execute("DELETE FROM ops_sak_kosong_mutasi WHERE jenis='opname' AND keterangan LIKE '%%UJI opname%%'")
+        cur.execute("DELETE FROM ops_stok_jadi_mutasi WHERE jenis='opname' AND keterangan LIKE '%%UJI opname%%'")
+        cur.execute("DELETE FROM ops_tutup_hari WHERE created_by = ANY(%s)", (list(ids.values()),))
+        cur.execute("DELETE FROM app_audit_log WHERE entity IN ('ops_stock_opname','ops_tutup_hari','ops_audit_temuan') AND created_at > now() - interval '15 minutes'")
         # PABRIK_B2_9SEP2026: bersihkan data operasional uji (urut FK)
         uid_all = list(ids.values()) + [owner_id]
         cur.execute("DELETE FROM ops_upah_harian WHERE created_by = ANY(%s)", (list(ids.values()),))
