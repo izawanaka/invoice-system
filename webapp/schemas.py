@@ -54,11 +54,12 @@ class UserOut(BaseModel):
     password_aktif: bool = False
 
 
+# PABRIK_B1_9SEP2026: peran admin & kepala (workspace Pabrik) boleh dibuat/diubah owner.
 class UserCreateRequest(BaseModel):
     email: EmailStr
     username: str = Field(min_length=3, max_length=30)
     nama: str = Field(min_length=1)
-    role: str = Field(default="staff", pattern="^(owner|staff|viewer)$")
+    role: str = Field(default="staff", pattern="^(owner|staff|viewer|admin|kepala)$")
     # Password awal boleh diinput owner (5 Sep 2026); kosong -> sistem buat acak.
     password: Optional[str] = Field(default=None, min_length=8, max_length=128)
     login_via_google: bool = False
@@ -74,7 +75,7 @@ class UserCreateResult(BaseModel):
 
 class UserUpdateRequest(BaseModel):
     nama: Optional[str] = None
-    role: Optional[str] = Field(default=None, pattern="^(owner|staff|viewer)$")
+    role: Optional[str] = Field(default=None, pattern="^(owner|staff|viewer|admin|kepala)$")
     aktif: Optional[bool] = None
     username: Optional[str] = Field(default=None, min_length=3, max_length=30)
     login_via_google: Optional[bool] = None

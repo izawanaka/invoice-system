@@ -19,7 +19,7 @@ import settings  # HARUS diimpor PALING AWAL -- ini yang menambahkan folder kode
                  # di bawah ini (termasuk semua routers/*) bergantung pada urutan ini.
 import db_helper
 import security
-from routers import auth, badan_usaha, bap, dokumen, faktur_pajak, invoices, mitra, paperless, pembayaran, po, resi, users
+from routers import auth, badan_usaha, bap, dokumen, faktur_pajak, invoices, mitra, ops, paperless, pembayaran, po, resi, users
 
 app = FastAPI(
     title="Invoice Web Dashboard API",
@@ -29,6 +29,9 @@ app = FastAPI(
 
 METODE_TULIS = {'POST', 'PATCH', 'PUT', 'DELETE'}
 JALUR_BEBAS_VIEWER = ('/auth/',)
+# PABRIK_B1_9SEP2026: admin/kepala HANYA boleh /ops/* (workspace Pabrik), /auth/*, /health.
+# Gagal-tertutup: endpoint invoice yang ada maupun yang baru otomatis tertutup (K1, K3).
+JALUR_PABRIK = ('/auth/', '/ops/', '/health')
 TIPE_BERKAS = ('application/pdf', 'application/octet-stream', 'application/zip')
 
 
@@ -55,6 +58,12 @@ async def penjaga_viewer(request: Request, call_next):
     browser hanya melihat error jaringan tanpa keterangan.
     '''
     peran = security.role_dari_request(request)
+
+    if peran in security.PERAN_PABRIK and not request.url.path.startswith(JALUR_PABRIK):
+        return JSONResponse(
+            status_code=403,
+            content={'detail': 'Peran Pabrik hanya boleh mengakses workspace Pabrik.'},
+        )
 
     if peran == 'viewer' and request.method in METODE_TULIS \
             and not request.url.path.startswith(JALUR_BEBAS_VIEWER):
@@ -97,6 +106,7 @@ app.include_router(faktur_pajak.router)
 app.include_router(resi.router)
 app.include_router(dokumen.router)
 app.include_router(pembayaran.router)
+app.include_router(ops.router)  # workspace Pabrik
 
 
 @app.get("/health")

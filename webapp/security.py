@@ -175,3 +175,34 @@ def require_owner(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
             detail="Hanya Owner yang boleh mengakses ini",
         )
     return user
+
+# ---------------------------------------------------------------- PABRIK_B1_9SEP2026
+# Workspace PABRIK (DESIGN-PABRIK.md K1-K3). admin & kepala SETARA penuh (K2);
+# keduanya hanya boleh menyentuh /ops/* -- penjaga globalnya di main.py.
+PERAN_PABRIK = ("admin", "kepala")
+PERAN_PABRIK_TULIS = ("owner", "admin", "kepala")
+PERAN_PABRIK_BACA = ("owner", "admin", "kepala", "viewer")
+
+
+def is_pabrik(user: CurrentUser) -> bool:
+    return user.role in PERAN_PABRIK
+
+
+def require_pabrik_tulis(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+    """Endpoint TULIS workspace Pabrik: owner, admin, kepala (K2: setara, tanpa flag)."""
+    if user.role not in PERAN_PABRIK_TULIS:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Hanya Owner, Admin, dan Kepala pabrik yang boleh mengubah data Pabrik",
+        )
+    return user
+
+
+def require_pabrik_baca(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+    """Endpoint BACA workspace Pabrik: owner, admin, kepala, viewer. Staf invoice tidak."""
+    if user.role not in PERAN_PABRIK_BACA:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Peran ini tidak punya akses ke workspace Pabrik",
+        )
+    return user
