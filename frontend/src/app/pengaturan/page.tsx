@@ -241,6 +241,8 @@ function BuatAkunDialog({
               <SelectContent>
                 <SelectItem value="staff">Staf — input data, tidak melihat pelunasan</SelectItem>
                 <SelectItem value="viewer">Pengamat — hanya melihat & membaca, termasuk pelunasan</SelectItem>
+                <SelectItem value="admin">Admin pabrik — input operasional Pabrik saja, tidak melihat penjualan</SelectItem>
+                <SelectItem value="kepala">Kepala pabrik — input operasional Pabrik + lihat BAP versi pabrik & bonusnya</SelectItem>
                 <SelectItem value="owner">Owner — akses penuh termasuk pelunasan & akun</SelectItem>
               </SelectContent>
             </Select>
@@ -337,6 +339,8 @@ function EditAkunDialog({
               <SelectContent>
                 <SelectItem value="staff">Staf</SelectItem>
                 <SelectItem value="viewer">Pengamat</SelectItem>
+                <SelectItem value="admin">Admin pabrik</SelectItem>
+                <SelectItem value="kepala">Kepala pabrik</SelectItem>
                 <SelectItem value="owner">Owner</SelectItem>
               </SelectContent>
             </Select>
@@ -629,6 +633,10 @@ function PengaturanContent() {
                           </Badge>
                         ) : u.role === "viewer" ? (
                           <Badge variant="outline">Pengamat</Badge>
+                        ) : u.role === "admin" ? (
+                          <Badge variant="secondary">Admin pabrik</Badge>
+                        ) : u.role === "kepala" ? (
+                          <Badge variant="secondary">Kepala pabrik</Badge>
                         ) : (
                           <Badge variant="secondary">Staf</Badge>
                         )}

@@ -5,7 +5,9 @@
 // "viewer" (Pengamat) ditambahkan 4 Sep 2026 -- pengamat murni: boleh MEMBACA
 // semua termasuk pelunasan, tapi tidak menulis & tidak mengunduh. Penegakannya
 // di server (webapp/security.py + middleware main.py); di sini hanya tampilan.
-export type Role = "owner" | "staff" | "viewer";
+// PABRIK_B1_9SEP2026: admin & kepala = peran workspace Pabrik (DESIGN-PABRIK K2),
+// setara penuh untuk input, tidak pernah melihat DKP/KKS (server 403).
+export type Role = "owner" | "staff" | "viewer" | "admin" | "kepala";
 
 export interface MeResponse {
   id: number;
@@ -461,4 +463,47 @@ export interface KontrakOut {
   ringkasan: string | null;
   ringkasan_at: string | null;
   created_at: string | null;
+}
+
+// ---------------------------------------------------------------- PABRIK_B1_9SEP2026
+// Mengikuti webapp/routers/ops.py (workspace Pabrik).
+export interface OpsParameterOut {
+  id: number;
+  kode: string;
+  nilai: number | null;
+  berlaku_mulai: string;
+  berlaku_sampai: string | null;
+  catatan: string | null;
+  created_by: number;
+  dibatalkan_pada?: string | null;
+}
+export interface OpsParameterCreate {
+  kode: string;
+  nilai: number | null;
+  berlaku_mulai: string;
+  catatan?: string;
+}
+export interface OpsTarifBonusOut {
+  id: number;
+  jenjang: number;
+  sak_dari: number;
+  sak_sampai: number | null;
+  tarif_per_sak: number;
+  berlaku_mulai: string;
+  berlaku_sampai: string | null;
+}
+export interface OpsPemasokOut {
+  id: number;
+  nama: string;
+  jenis: string;
+  kontak: string | null;
+  aktif: boolean;
+}
+export interface OpsPetakOut {
+  id: number;
+  nomor: string;
+  panjang_m: number | null;
+  lebar_m: number | null;
+  tinggi_maks_m: number | null;
+  aktif: boolean;
 }

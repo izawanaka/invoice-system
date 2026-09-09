@@ -15,11 +15,13 @@ import {
   User,
   Users,
   Send,
+  Factory,
+  Settings2,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth-context";
-import { useBadanUsaha } from "@/lib/badan-usaha-context";
+import { PERAN_PABRIK, WORKSPACE_PABRIK, useBadanUsaha } from "@/lib/badan-usaha-context";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -49,6 +51,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // ini SELURUHNYA berisi aksi tulis (unggah BAP, terbitkan invoice, kirim
   // dokumen), jadi tidak ada gunanya ditampilkan -- server menolak semuanya.
   const isViewer = user?.role === "viewer";
+  // PABRIK_B1_9SEP2026: workspace Pabrik (DESIGN-PABRIK K1-K3). admin/kepala dikunci di /pabrik/*.
+  const isPabrikRole = PERAN_PABRIK.includes(user?.role ?? "");
+  const isPabrikWs = selected === WORKSPACE_PABRIK || (pathname?.startsWith("/pabrik") ?? false);
+  const wsLabel = isPabrikWs ? "PABRIK" : selectedBu?.kode;
 
   const isActive = (href: string) => pathname === href || pathname?.startsWith(href + "/");
 
@@ -60,11 +66,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // Menu bertahap (permintaan owner 30 Jul 2026):
   // - Awal (belum pilih workspace): Mitra, Dashboard, + Pengaturan (owner saja).
   // - Setelah pilih DKP/KKS: muncul Terbit Invoice + Laporan (Rekap Invoice, PO).
-  const navItems: NavEntry[] = [
-    { href: "/mitra", label: "Mitra", icon: Users },
-    { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
-  ];
-  if (chosen) {
+  const navItems: NavEntry[] = isPabrikWs
+    ? [{ href: "/pabrik", label: "Pabrik", icon: Factory }]
+    : [
+        { href: "/mitra", label: "Mitra", icon: Users },
+        { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+      ];
+  if (isPabrikWs && isOwner) {
+    navItems.push({ href: "/pabrik/parameter", label: "Parameter", icon: Settings2 });
+  }
+  if (chosen && !isPabrikWs) {
     if (!isViewer) {
       navItems.push({ href: "/bap", label: "Terbit Invoice", icon: FileText });
       navItems.push({ href: "/invoice-gantung", label: "Invoice Gantung", icon: Send });
@@ -89,6 +100,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     if (!chosen) router.replace("/pilih");
   }, [hydrated, chosen, router]);
 
+  // PABRIK_B1_9SEP2026: admin/kepala tidak boleh keluar dari /pabrik/* (server pun 403);
+  // siapa pun yang memilih workspace Pabrik diarahkan dari /dashboard ke /pabrik.
+  React.useEffect(() => {
+    if (!hydrated || !pathname) return;
+    if (isPabrikRole && !pathname.startsWith("/pabrik")) router.replace("/pabrik");
+    else if (isPabrikWs && pathname === "/dashboard") router.replace("/pabrik");
+  }, [hydrated, pathname, isPabrikRole, isPabrikWs, router]);
+
   if (hydrated && !chosen) {
     return (
       <div className="flex min-h-screen flex-1 items-center justify-center text-sm text-muted-foreground">
@@ -101,8 +120,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     <div className="flex min-h-screen flex-1">
       <aside className="hidden w-56 shrink-0 flex-col border-r border-border bg-card px-3 py-4 md:flex">
         <div className="mb-6 px-2">
-          <p className="text-sm font-semibold leading-tight">Invoice System</p>
-          <p className="text-xs text-muted-foreground">PO · BAP · Invoice</p>
+          <p className="text-sm font-semibold leading-tight">{isPabrikWs ? "Pabrik Cocopeat" : "Invoice System"}</p>
+          <p className="text-xs text-muted-foreground">{isPabrikWs ? "Hulu · Produksi" : "PO · BAP · Invoice"}</p>
         </div>
         <nav className="flex flex-1 flex-col gap-1">
           {navItems.map((entry) => {
@@ -162,17 +181,19 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </div>
 
           <div className="hidden items-center gap-2 md:flex">
-            {chosen && selectedBu ? (
+            {chosen && wsLabel ? (
               <>
                 <span className="rounded-md bg-primary/10 px-2.5 py-1 text-xs font-semibold text-primary">
-                  Workspace: {selectedBu.kode}
+                  Workspace: {wsLabel}
                 </span>
+                {isPabrikRole ? null : (
                 <Link
                   href="/pilih"
                   className="text-xs font-medium text-primary underline-offset-2 hover:underline"
                 >
                   Ganti Workspace
                 </Link>
+                )}
               </>
             ) : null}
           </div>
@@ -190,17 +211,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                   <p className="text-sm font-medium">{user?.nama}</p>
                   <p className="text-xs font-normal text-muted-foreground">{user?.email}</p>
                   <p className="text-xs font-normal text-muted-foreground">
-                    {isViewer ? "Pengamat — hanya melihat" : <span className="capitalize">{user?.role}</span>}
+                    {isViewer ? "Pengamat — hanya melihat" : user?.role === "kepala" ? "Kepala pabrik" : user?.role === "admin" ? "Admin pabrik" : <span className="capitalize">{user?.role}</span>}
                   </p>
-                  {chosen && selectedBu ? (
-                    <p className="mt-1 text-xs font-medium text-primary">Workspace: {selectedBu.kode}</p>
+                  {chosen && wsLabel ? (
+                    <p className="mt-1 text-xs font-medium text-primary">Workspace: {wsLabel}</p>
                   ) : null}
                 </DropdownMenuLabel>
                 <DropdownMenuSeparator />
-                {chosen ? (
+                {chosen && !isPabrikRole ? (
                   <DropdownMenuItem onClick={() => router.push("/pilih")} className="gap-2">
                     <ArrowLeftRight className="h-4 w-4" />
-                    Pindah Workspace (DKP/KKS)
+                    Pindah Workspace
                   </DropdownMenuItem>
                 ) : null}
                 <DropdownMenuItem onClick={doLogout} className="gap-2 text-destructive focus:text-destructive">

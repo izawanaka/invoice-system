@@ -29,6 +29,11 @@ import type {
   ResiListItem,
   CekDokumenResult,
   PembayaranRingkas,
+  OpsParameterOut,
+  OpsParameterCreate,
+  OpsTarifBonusOut,
+  OpsPemasokOut,
+  OpsPetakOut,
 } from "./types";
 
 // Base URL backend FastAPI. Di sandbox/produksi nanti ini akan diarahkan ke
@@ -642,4 +647,37 @@ export async function downloadKontrak(kontrakId: number): Promise<Blob> {
     throw new ApiError(res.status, `Gagal mengunduh kontrak (HTTP ${res.status})`);
   }
   return res.blob();
+}
+
+// ---------------------------------------------------------------- PABRIK_B1_9SEP2026
+// Workspace PABRIK (webapp/routers/ops.py). Semua lewat prefix /ops.
+export function opsPing() {
+  return request<{ workspace: string; role: string; nama: string }>("/ops/ping");
+}
+export function listParameter(tanggal?: string) {
+  return request<OpsParameterOut[]>(`/ops/parameter${tanggal ? `?tanggal=${tanggal}` : ""}`);
+}
+export function listParameterRiwayat(kode?: string) {
+  return request<OpsParameterOut[]>(`/ops/parameter/riwayat${kode ? `?kode=${encodeURIComponent(kode)}` : ""}`);
+}
+export function createParameter(body: OpsParameterCreate) {
+  return request<OpsParameterOut>("/ops/parameter", { method: "POST", body: JSON.stringify(body) });
+}
+export function listTarifBonus() {
+  return request<OpsTarifBonusOut[]>("/ops/tarif-bonus");
+}
+export function listPemasok(hanyaAktif = false) {
+  return request<OpsPemasokOut[]>(`/ops/pemasok${hanyaAktif ? "?hanya_aktif=true" : ""}`);
+}
+export function createPemasok(body: { nama: string; jenis: string; kontak?: string }) {
+  return request<OpsPemasokOut>("/ops/pemasok", { method: "POST", body: JSON.stringify(body) });
+}
+export function updatePemasok(id: number, body: { nama?: string; kontak?: string; aktif?: boolean }) {
+  return request<OpsPemasokOut>(`/ops/pemasok/${id}`, { method: "PATCH", body: JSON.stringify(body) });
+}
+export function listPetak() {
+  return request<OpsPetakOut[]>("/ops/petak");
+}
+export function createPetak(body: { nomor: string; panjang_m?: number; lebar_m?: number; tinggi_maks_m?: number }) {
+  return request<OpsPetakOut>("/ops/petak", { method: "POST", body: JSON.stringify(body) });
 }

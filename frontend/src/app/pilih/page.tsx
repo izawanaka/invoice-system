@@ -5,13 +5,15 @@ import { useRouter } from "next/navigation";
 import { ClipboardList, ArrowRight } from "lucide-react";
 
 import { RequireAuth } from "@/components/require-auth";
-import { useBadanUsaha } from "@/lib/badan-usaha-context";
+import { PERAN_PABRIK, WORKSPACE_PABRIK, useBadanUsaha } from "@/lib/badan-usaha-context";
 import { useAuth } from "@/lib/auth-context";
 import { cn } from "@/lib/utils";
 
 const WORKSPACES = [
   { kode: "DKP", nama: "Cocopeat DKP", satuan: "kg", desc: "Terbit invoice cocopeat satuan kilogram (dengan PPN)." },
   { kode: "KKS", nama: "Cocopeat KKS", satuan: "m3", desc: "Terbit invoice cocopeat satuan meter kubik." },
+  // PABRIK_B1_9SEP2026: workspace hulu (DESIGN-PABRIK K1).
+  { kode: WORKSPACE_PABRIK, nama: "Pabrik Cocopeat", satuan: "sak", desc: "Operasional pabrik: terima truk, lot, produksi, sak, kas kecil, bonus kepala." },
 ];
 
 function PilihContent() {
@@ -19,21 +21,27 @@ function PilihContent() {
   const { user } = useAuth();
   const router = useRouter();
 
+  // Staf invoice tidak punya akses Pabrik (server 403); admin/kepala hanya Pabrik.
+  const role = user?.role ?? "";
+  const daftar = PERAN_PABRIK.includes(role)
+    ? WORKSPACES.filter((w) => w.kode === WORKSPACE_PABRIK)
+    : role === "staff" ? WORKSPACES.filter((w) => w.kode !== WORKSPACE_PABRIK) : WORKSPACES;
+
   function pilih(kode: string) {
     setSelected(kode);
-    router.replace("/dashboard");
+    router.replace(kode === WORKSPACE_PABRIK ? "/pabrik" : "/dashboard");
   }
 
   return (
     <div className="flex min-h-screen flex-1 flex-col items-center justify-center gap-8 bg-muted/30 p-6">
       <div className="text-center">
-        <h1 className="text-2xl font-semibold">Pilih Masuk DKP atau KKS</h1>
+        <h1 className="text-2xl font-semibold">Pilih Workspace</h1>
         <p className="mt-1 max-w-md text-sm text-muted-foreground">
           {user?.nama ? "Halo, " + user.nama + ". " : ""}Pilih workspace. Terbit Invoice &amp; Laporan akan mengikuti pilihan ini. Ringkasan di Dashboard tetap gabungan DKP + KKS.
         </p>
       </div>
-      <div className="grid w-full max-w-2xl grid-cols-1 gap-4 sm:grid-cols-2">
-        {WORKSPACES.map((w) => (
+      <div className="grid w-full max-w-4xl grid-cols-1 gap-4 sm:grid-cols-3">
+        {daftar.map((w) => (
           <button
             key={w.kode}
             type="button"

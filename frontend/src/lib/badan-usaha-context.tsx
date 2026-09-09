@@ -11,6 +11,11 @@ const CHOSEN_KEY = "invoice_app_bu_chosen";
 const DEFAULT_KODE = "DKP";
 
 const DASHBOARD_BU = ["DKP", "KKS"];
+// PABRIK_B1_9SEP2026: workspace ketiga "PABRIK" (bukan badan usaha; tidak ada di tabel
+// badan_usaha). Boleh dipilih owner/viewer; admin & kepala OTOMATIS masuk ke sini.
+export const WORKSPACE_PABRIK = "PABRIK";
+const WORKSPACE_VALID = [...DASHBOARD_BU, WORKSPACE_PABRIK];
+export const PERAN_PABRIK = ["admin", "kepala"];
 
 interface BadanUsahaState {
   list: BadanUsahaOut[];
@@ -51,7 +56,7 @@ export function BadanUsahaProvider({ children }: { children: React.ReactNode }) 
   React.useEffect(() => {
     if (typeof window !== "undefined") {
       const saved = window.localStorage.getItem(STORAGE_KEY);
-      if (saved && DASHBOARD_BU.includes(saved)) setSelectedState(saved);
+      if (saved && WORKSPACE_VALID.includes(saved)) setSelectedState(saved);
       // "chosen" per-sesi: bertahan saat refresh (sessionStorage), hilang saat
       // tab ditutup atau Log out. Login berikutnya mulai dari kondisi awal.
       if (window.sessionStorage.getItem(CHOSEN_KEY) === "1") setChosen(true);
@@ -78,6 +83,14 @@ export function BadanUsahaProvider({ children }: { children: React.ReactNode }) 
       window.sessionStorage.setItem(CHOSEN_KEY, "1");
     }
   }, []);
+
+  // PABRIK_B1_9SEP2026: admin/kepala tidak punya pilihan workspace lain.
+  React.useEffect(() => {
+    if (!hydrated || !user) return;
+    if (PERAN_PABRIK.includes(user.role) && (!chosen || selected !== WORKSPACE_PABRIK)) {
+      setSelected(WORKSPACE_PABRIK);
+    }
+  }, [hydrated, user, chosen, selected, setSelected]);
 
   const resetWorkspace = React.useCallback(() => {
     setChosen(false);
