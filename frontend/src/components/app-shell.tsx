@@ -15,13 +15,13 @@ import {
   User,
   Users,
   Send,
-  Factory,
   Settings2,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { useAuth } from "@/lib/auth-context";
 import { PERAN_PABRIK, WORKSPACE_PABRIK, useBadanUsaha } from "@/lib/badan-usaha-context";
+import { BERANDA, MODUL } from "@/lib/pabrik-menu";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -56,7 +56,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const isPabrikWs = selected === WORKSPACE_PABRIK || (pathname?.startsWith("/pabrik") ?? false);
   const wsLabel = isPabrikWs ? "PABRIK" : selectedBu?.kode;
 
-  const isActive = (href: string) => pathname === href || pathname?.startsWith(href + "/");
+  const isActive = (href: string) => {
+    if (pathname === href || pathname?.startsWith(href + "/")) return true;
+    const m = href.match(/^\/pabrik\/modul\/(\w+)$/);
+    if (m) return !!MODUL.find((x) => x.slug === m[1])?.fungsi.some((f) => pathname === f.href.split("?")[0]);
+    return false;
+  };
 
   const doLogout = React.useCallback(() => {
     resetWorkspace();
@@ -67,7 +72,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   // - Awal (belum pilih workspace): Mitra, Dashboard, + Pengaturan (owner saja).
   // - Setelah pilih DKP/KKS: muncul Terbit Invoice + Laporan (Rekap Invoice, PO).
   const navItems: NavEntry[] = isPabrikWs
-    ? [{ href: "/pabrik", label: "Pabrik", icon: Factory }]
+    ? [BERANDA, { section: "Modul", items: MODUL.map((m) => ({ href: `/pabrik/modul/${m.slug}`, label: m.label, icon: m.icon })) }]  // PABRIK_FE_B2B7_9SEP2026: pola Accurate
     : [
         { href: "/mitra", label: "Mitra", icon: Users },
         { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -75,6 +80,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   if (isPabrikWs && isOwner) {
     navItems.push({ href: "/pabrik/parameter", label: "Parameter", icon: Settings2 });
   }
+  // Highlight modul saat berada di halaman fungsi di dalamnya
   if (chosen && !isPabrikWs) {
     if (!isViewer) {
       navItems.push({ href: "/bap", label: "Terbit Invoice", icon: FileText });

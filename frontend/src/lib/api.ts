@@ -82,7 +82,7 @@ function extractDetailMessage(detail: unknown): string | null {
   return null;
 }
 
-async function request<T>(
+export async function request<T>(
   path: string,
   options: RequestInit & { auth?: boolean } = {},
 ): Promise<T> {
