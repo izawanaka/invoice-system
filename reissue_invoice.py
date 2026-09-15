@@ -50,17 +50,22 @@ def reissue(no_invoice):
     conn = db_helper.get_conn()
     cur = conn.cursor()
     cur.execute(
-        "SELECT id, badan_usaha_id, tgl_invoice, no_po, site, customer, grand_total, pdf_path "
+        "SELECT id, badan_usaha_id, tgl_invoice, no_po, site, customer, grand_total, pdf_path, po_id "
         "FROM invoices WHERE no_invoice = %s", (no_invoice,))
     inv = cur.fetchone()
     if not inv:
         cur.close(); conn.close()
         raise SystemExit("Invoice %s tidak ditemukan di database" % no_invoice)
-    inv_id, bu_id, tgl_invoice, no_po, site, customer, grand_db, pdf_path = inv
+    inv_id, bu_id, tgl_invoice, no_po, site, customer, grand_db, pdf_path, po_id = inv
     cur.execute(
         "SELECT no_bap, deskripsi, qty, harga_sat FROM invoice_items "
         "WHERE invoice_id = %s ORDER BY urutan", (inv_id,))
     rows = cur.fetchall()
+    # Alamat customer dari PO invoice ini (purchase_orders.cust_addr). Fallback ke default DKP
+    # hanya kalau PO tidak punya alamat (pelajaran Inv 015 KKS, 15 Sep 2026: alamat MPS pernah tercetak alamat DKP).
+    cur.execute("SELECT cust_addr FROM purchase_orders WHERE id = %s", (po_id,))
+    _row = cur.fetchone()
+    cust_addr = list(_row[0]) if _row and _row[0] else _DEFAULT_CUST_ADDR
     cur.close(); conn.close()
 
     if not rows:
@@ -88,7 +93,7 @@ def reissue(no_invoice):
 
     res = gen.generate_pdf(
         no_invoice, inv_date, items[0][0], site, no_po,
-        customer, _DEFAULT_CUST_ADDR, items)
+        customer, cust_addr, items)
     filepath = res[0]
     grand = float(res[-1])  # DKP: (fp,sub,dpp,vat,grand) | KKS: (fp,sub,grand)
 
