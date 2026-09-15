@@ -348,11 +348,14 @@ def main():
         sys.exit(1)
     # Ambil customer dari PO tracker
     customer = po1.get("customer", "PT. Permata Borneo Abadi")
-    cust_addr = po1.get("cust_addr", [
-        "Jl. Syarifuddin Yoes No. 68A-68B RT.45",
-        "Sepinggan Baru Balikpapan Selatan",
-        "Kota Balikpapan Kalimantan Timur",
-        "02.505.000.6-722.000"])
+    # Aturan owner 15 Sep 2026: alamat customer WAJIB ada di PO (purchase_orders.cust_addr).
+    # Tidak ada lagi alamat default diam-diam (dulu default = alamat Permata Borneo Abadi).
+    cust_addr = po1.get("cust_addr")
+    if not cust_addr:
+        print(json.dumps({"status":"error","message":
+            f"PO {po1.get('po_no')} ({site}) belum punya alamat customer. "
+            f"Isi alamat + NPWP di data PO dulu (form Edit PO), baru invoice bisa dibuat."}))
+        sys.exit(1)
     inv_no, next_no = next_inv_no(site, inv_date)
 
     po_list = get_po_list(site)

@@ -301,10 +301,15 @@ def main():
     # tetap dihormati sbg override eksplisit kalau ada, demi kompatibilitas
     # pemanggilan lama/manual.
     customer = data.get("customer") or po1.get("customer","PT.Itci Hutani Manunggal")
-    cust_addr = data.get("cust_addr") or po1.get("cust_addr",[
-        "Jl. 1519 Simpang Empat Terunen Blok.000",
-        "RT.010. RW.000 Bumi Harapan, Sepaku Kab. Penajam Paser Utara",
-        "Kalimantan Timur 76184","01.609.260.3.725.000"])
+    # Aturan owner 15 Sep 2026: alamat customer WAJIB ada di PO (purchase_orders.cust_addr).
+    # Tidak ada lagi alamat default diam-diam -- dulu default ini (alamat ITCI) ikut
+    # tercetak di invoice Adindo (Inv 094-101) tanpa ada yang sadar.
+    cust_addr = data.get("cust_addr") or po1.get("cust_addr")
+    if not cust_addr:
+        print(json.dumps({"status":"error","message":
+            f"PO {po1.get('po_no')} ({site}) belum punya alamat customer. "
+            f"Isi alamat + NPWP di data PO dulu (form Edit PO), baru invoice bisa dibuat."}))
+        sys.exit(1)
     po_list = get_po_list(site)
     inv_no, next_no = next_inv_no(site, inv_date)
 
