@@ -122,7 +122,9 @@ def alokasi_po(qty_list, po_list, qty_field, used_field, price_field):
                 idx += 1
                 continue
             ambil = round(min(q, tersedia), 4)
-            items.append((len(items) + 1, f"Cocopeat - PO.{po_no}", ambil, harga))
+            # Kalau nomor PO sudah berawalan "PO" (mis. PO-12-000...), jangan tambah "PO." lagi
+            label_po = po_no if str(po_no).upper().startswith("PO") else f"PO.{po_no}"
+            items.append((len(items) + 1, f"Cocopeat - {label_po}", ambil, harga))
             if po_no not in splits:
                 urutan.append(po_no)
             splits[po_no] = round(splits.get(po_no, 0) + ambil, 4)
