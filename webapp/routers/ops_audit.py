@@ -23,6 +23,7 @@ import security
 import audit_pabrik
 from audit import log_audit
 from deps import get_db
+from routers.ops_operasional import _kunci  # F1 (27 Sep 2026)
 
 router = APIRouter(prefix="/ops", tags=["pabrik-audit"])
 
@@ -93,6 +94,7 @@ def opname_baru(body: OpnameIn, conn=Depends(get_db), user: security.CurrentUser
     """sak_kosong / stok_jadi: selisih != 0 -> baris ledger 'opname' (P2) dalam transaksi yang sama.
     petak: nilai_sistem = sisa WIP estimasi lot aktif; hanya dicatat (K9), tanpa ledger."""
     cur = conn.cursor()
+    _kunci(cur, "sak", "stok")
     if body.tanggal > date.today():
         raise HTTPException(status_code=422, detail="Tanggal opname tidak boleh di masa depan")
     ref_mutasi = None
@@ -144,6 +146,7 @@ def opname_baru(body: OpnameIn, conn=Depends(get_db), user: security.CurrentUser
 def opname_batal(row_id: int, body: BatalIn, conn=Depends(get_db), user: security.CurrentUser = Depends(security.require_owner)):
     """P1: tandai opname dibatalkan + batalkan baris ledger 'opname'-nya (saldo kembali ke sebelum opname)."""
     cur = conn.cursor()
+    _kunci(cur, "sak", "stok")
     cur.execute("SELECT jenis, ref_mutasi_id, dibatalkan_pada FROM ops_stock_opname WHERE id=%s FOR UPDATE", (row_id,))
     r = cur.fetchone()
     if not r:

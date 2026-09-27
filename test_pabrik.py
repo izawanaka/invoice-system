@@ -101,6 +101,13 @@ def token(conn, user_id):
 
 def main():
     conn = db_helper.get_conn()
+    _k = conn.cursor()
+    _k.execute("SELECT current_database()")
+    if _k.fetchone()[0] == "bisnis_izawa":
+        # B1 (27 Sep 2026): suite ini menulis & menghapus data UJI; pagar append-only produksi mutlak
+        print("DITOLAK: test_pabrik.py hanya boleh dijalankan di DB klon sekali-pakai, bukan bisnis_izawa")
+        conn.close()
+        raise SystemExit(2)
     ids = buat_akun_uji(conn)
     cur = conn.cursor()
     cur.execute("SELECT id FROM app_users WHERE role='owner' AND aktif ORDER BY id LIMIT 1")
@@ -284,9 +291,11 @@ def main():
         s, b = req("POST", f"/ops/produksi/{prod_id}/batal", t_kepala, {"alasan": "UJI salah hitung"})
         s2, sal = req("GET", "/ops/saldo", t_kepala)
         check("E27 batal produksi membalik 3 baris: sak 90, stok jadi 0", s == 200 and sal.get("sak_kosong") == 90 and sal.get("stok_jadi") == 0, (s, sal))
-        s, b = req("POST", "/ops/sak", t_kepala, {"tanggal": "2026-09-09", "jenis": "opname", "jumlah": 0, "opname_saldo_fisik": 85, "keterangan": "UJI opname"})
+        s0, _ = req("POST", "/ops/sak", t_kepala, {"tanggal": "2026-09-09", "jenis": "opname", "jumlah": 0, "opname_saldo_fisik": 85, "keterangan": "UJI opname"})
+        s, b = req("POST", "/ops/opname", t_owner, {"tanggal": "2026-09-09", "jenis": "sak_kosong", "nilai_terukur": 85, "disaksikan_oleh": "UJI saksi", "catatan": "UJI opname E28"})
         s2, sal = req("GET", "/ops/saldo", t_kepala)
-        check("E28 opname fisik 85 -> delta -5, saldo 85", s == 201 and b.get("delta") == -5 and sal.get("sak_kosong") == 85, (s, b, sal))
+        check("E28 opname via /ops/sak ditolak 422 (F3); opname owner fisik 85 -> selisih -5, saldo 85",
+              s0 == 422 and s == 201 and b.get("selisih") == -5.0 and sal.get("sak_kosong") == 85, (s0, s, b, sal))
         s, _ = req("POST", "/ops/cuaca", t_admin, {"tanggal": "2026-09-09", "hujan_mm": 12.5, "cuaca_teks": "hujan sore", "catatan": "UJI"})
         s2, _ = req("POST", "/ops/cuaca", t_kepala, {"tanggal": "2026-09-09", "hujan_mm": 14, "cuaca_teks": "hujan sore", "catatan": "UJI"})
         s3, b = req("GET", "/ops/cuaca?hari=30", t_kepala)
@@ -461,6 +470,71 @@ def main():
         s2, rg = req("GET", "/ops/tutup-hari/ringkasan", t_admin)
         check("G14 batal tutup hari (P1 tandai) -> ringkasan sudah_ditutup false", s == 200 and b.get("dibatalkan") is True and rg.get("sudah_ditutup") is False, (s, rg))
 
+        print("== H. Polesan stok F1-F4 + T6 (27 Sep 2026)")  # PABRIK_STOK_F1F4_27SEP2026
+        import threading
+        import psycopg2
+        cur.execute("SELECT ref_mutasi_id FROM ops_stock_opname WHERE id=%s", (op_sak,))
+        mut_opname = cur.fetchone()[0]
+        s, _ = req("POST", f"/ops/sak/{mut_opname}/batal", t_kepala, {"alasan": "UJI coba batal opname"})
+        s2, _ = req("POST", f"/ops/sak/{mut_opname}/batal", t_owner, {"alasan": "UJI coba batal opname"})
+        check("H1 mutasi hasil opname tidak bisa dibatalkan lewat /ops/sak (kepala & owner 409, F3)", s == 409 and s2 == 409, (s, s2))
+        s, sal = req("GET", "/ops/saldo", t_kepala)
+        sk = sal.get("sak_kosong") or 0
+        n = sk // 2 + 1
+        hasil = []
+
+        def _rusak():
+            hasil.append(req("POST", "/ops/sak", t_kepala, {"tanggal": "2026-09-10", "jenis": "rusak", "jumlah": n, "keterangan": "UJI paralel"})[0])
+
+        utas = [threading.Thread(target=_rusak) for _ in range(2)]
+        for u in utas:
+            u.start()
+        for u in utas:
+            u.join()
+        s, sal2 = req("GET", "/ops/saldo", t_kepala)
+        check("H2 dua 'rusak' paralel yang bersama melebihi saldo: tepat satu 201, satu 409, saldo tidak negatif (F1)",
+              sk >= 2 and sorted(hasil) == [201, 409] and sal2.get("sak_kosong") == sk - n, (sk, n, hasil, sal2))
+        c2 = db_helper.get_conn()
+        k2 = c2.cursor()
+        try:
+            k2.execute("INSERT INTO ops_sak_kosong_mutasi (tanggal, jenis, delta, jumlah, keterangan, created_by) "
+                       "VALUES ('2026-09-10','koreksi',-100000,100000,'UJI minus langsung',%s)", (ids["kepala"],))
+            c2.commit()
+            ok = False
+        except psycopg2.Error as e:
+            c2.rollback()
+            ok = getattr(e, "pgcode", None) == "23514"
+        check("H3 INSERT langsung ke DB yang membuat saldo sak negatif ditolak saat commit (F2, 23514)", ok)
+
+        def _ditolak(sql, params):
+            try:
+                k2.execute(sql, params)
+                c2.rollback()
+                return False
+            except psycopg2.Error as e:
+                c2.rollback()
+                return getattr(e, "pgcode", None) == "23514"
+
+        cur.execute("SELECT id FROM ops_sak_kosong_mutasi WHERE created_by=%s AND dibatalkan_pada IS NULL ORDER BY id LIMIT 1", (ids["kepala"],))
+        rid = cur.fetchone()[0]
+        cur.execute("SELECT id FROM ops_sak_kosong_mutasi WHERE dibatalkan_pada IS NOT NULL ORDER BY id DESC LIMIT 1")
+        rbatal = cur.fetchone()[0]
+        cur.execute("SELECT max(id) FROM ops_stok_jadi_mutasi")
+        rstok = cur.fetchone()[0]
+        hasil4 = [
+            _ditolak("DELETE FROM ops_sak_kosong_mutasi WHERE id=%s", (rid,)),
+            _ditolak("UPDATE ops_sak_kosong_mutasi SET delta=delta+1 WHERE id=%s", (rid,)),
+            _ditolak("UPDATE ops_sak_kosong_mutasi SET dibatalkan_pada=NULL, dibatalkan_oleh=NULL WHERE id=%s", (rbatal,)),
+            _ditolak("DELETE FROM ops_stok_jadi_mutasi WHERE id=%s", (rstok,)),
+            _ditolak("UPDATE ops_stock_opname SET ref_mutasi_id=NULL WHERE id=%s", (op_sak,)),
+        ]
+        check("H4 DB menolak DELETE ledger, ubah delta, buka pembatalan, hapus stok, cabut tautan opname (F4, 23514)",
+              all(hasil4), (rid, rbatal, rstok, hasil4))
+        c2.close()
+        cur.execute("SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgname IN "
+                    "('trg_ops_saldo_kas','trg_ops_saldo_sak','trg_ops_saldo_stok','trg_ops_jaga','trg_ops_tolak_truncate')")
+        check("H5 13 trigger pagar terpasang (F2 3 + F4 5 + TRUNCATE 5)", cur.fetchone()[0] == 13)
+
         print("== D. Invoice tidak tersentuh (K1)")
         cur.execute("SELECT count(*) FROM invoices")
         n_inv = cur.fetchone()[0]
@@ -473,6 +547,9 @@ def main():
         check("D2 tabel invoice utuh (PO/BAP/INV > 0)", n_po > 0 and n_bap > 0 and n_inv > 0, (n_po, n_bap, n_inv))
     finally:
 
+        # F4 (27 Sep 2026): ledger append-only di DB; bersih-bersih data UJI memakai izin sesi, hanya transaksi ini
+        conn.rollback()
+        cur.execute("SET LOCAL ops.izinkan_hapus_uji = 'ya'")
         # PABRIK_B7_9SEP2026: bersihkan opname / tutup hari / temuan audit uji
         cur.execute("DELETE FROM ops_potongan WHERE ref_tabel='ops_stock_opname' AND ref_id IN (SELECT id FROM ops_stock_opname WHERE catatan LIKE 'UJI%%')")
         if g_mulai:

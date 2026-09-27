@@ -23,7 +23,7 @@ import settings  # noqa: F401
 import security
 from audit import log_audit
 from deps import get_db
-from routers.ops_operasional import _batal, _num, _param
+from routers.ops_operasional import _batal, _kunci, _num, _param  # _kunci: F1 (27 Sep 2026)
 
 router = APIRouter(prefix="/ops", tags=["pabrik-bonus"])
 
@@ -104,6 +104,7 @@ def list_pengiriman(bulan: Optional[str] = None, conn=Depends(get_db),
 def pengiriman_baru(body: PengirimanIn, conn=Depends(get_db),
                     user: security.CurrentUser = Depends(security.require_pabrik_tulis)):
     cur = conn.cursor()
+    _kunci(cur, "stok")
     cur.execute("SELECT saldo FROM v_ops_saldo_stok_jadi")
     sj = cur.fetchone()[0]
     if sj - body.jumlah_sak < 0:
@@ -132,6 +133,7 @@ class BatalIn(BaseModel):
 def pengiriman_batal(row_id: int, body: BatalIn, conn=Depends(get_db),
                      user: security.CurrentUser = Depends(security.require_pabrik_tulis)):
     cur = conn.cursor()
+    _kunci(cur, "stok")
     cur.execute("SELECT bap_id FROM ops_pengiriman WHERE id=%s", (row_id,))
     r = cur.fetchone()
     if not r:

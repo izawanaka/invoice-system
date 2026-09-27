@@ -14,7 +14,7 @@ Kontrak DESIGN-PABRIK.md:
 """
 import json
 from datetime import date, time
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -32,6 +32,23 @@ TAHAP_URUT = ["curah", "giling", "basah", "jemur", "siap_karung", "habis"]
 
 def _num(v):
     return float(v) if isinstance(v, Decimal) else v
+
+
+# F1 (27 Sep 2026): serialisasi tulis per ledger. Urutan kunci tetap kas < sak < stok (anti-deadlock);
+# kunci transaksi lepas otomatis saat commit/rollback. Kelas & nomor SAMA dengan fungsi DB
+# ops_kunci_ledger() -- trigger saldo (F2, migrasi 2026-09-27) memakai kunci yang sama sebagai pagar kedua.
+KUNCI_KELAS = 77301
+KUNCI_LEDGER = {"kas": 1, "sak": 2, "stok": 3}
+
+
+def _kunci(cur, *ledger):
+    for nama in sorted(set(ledger), key=KUNCI_LEDGER.__getitem__):
+        cur.execute("SELECT pg_advisory_xact_lock(%s, %s)", (KUNCI_KELAS, KUNCI_LEDGER[nama]))
+
+
+def _uang(v) -> Decimal:
+    """T6: uang dihitung Decimal 2 desimal (ROUND_HALF_UP), bukan float."""
+    return Decimal(str(v)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
 def _param(cur, kode, tgl=None):
@@ -313,7 +330,7 @@ def penerimaan_batal(row_id: int, body: BatalIn, conn=Depends(get_db),
 # ============================================================ SAK KOSONG
 class SakIn(BaseModel):
     tanggal: date
-    jenis: str = Field(pattern="^(beli|rusak|retur|opname)$")
+    jenis: str = Field(pattern="^(beli|rusak|retur)$")  # F3 (27 Sep 2026): opname hanya lewat /ops/opname (owner)
     jumlah: int = Field(ge=0)
     pemasok_id: Optional[int] = None
     harga_per_sak: Optional[float] = Field(default=None, ge=0)
@@ -358,6 +375,7 @@ def sak_mutasi(body: SakIn, conn=Depends(get_db),
     """beli: +N dan otomatis kas keluar kategori 'sak' (P5: kas cukup). rusak: -N (masuk daftar
     menunggu retur). retur: 0 (menutup rusak). opname: delta = fisik - saldo sistem."""
     cur = conn.cursor()
+    _kunci(cur, "kas", "sak")
     cur.execute("SELECT saldo, rusak_belum_retur FROM v_ops_saldo_sak_kosong")
     sk, rusak = cur.fetchone()
     kas_id = None
@@ -368,9 +386,9 @@ def sak_mutasi(body: SakIn, conn=Depends(get_db),
         pm = cur.fetchone()
         if not pm or not pm[0]:
             raise HTTPException(status_code=422, detail="Pemasok sak tidak ada / nonaktif")
-        nominal = round(body.jumlah * body.harga_per_sak, 2)
+        nominal = _uang(Decimal(body.jumlah) * _uang(body.harga_per_sak))
         cur.execute("SELECT saldo FROM v_ops_saldo_kas")
-        if _num(cur.fetchone()[0]) - nominal < 0:
+        if Decimal(cur.fetchone()[0]) - nominal < 0:
             raise HTTPException(status_code=409, detail=f"Kas kecil tidak cukup untuk beli sak Rp{nominal:,.0f} (P5)")
         delta = body.jumlah
         cur.execute("INSERT INTO ops_kas_kecil (tanggal, jenis, kategori, nominal, keterangan, foto_nota, created_by) "
@@ -388,16 +406,12 @@ def sak_mutasi(body: SakIn, conn=Depends(get_db),
         if body.jumlah <= 0 or body.jumlah > rusak:
             raise HTTPException(status_code=409, detail=f"Sak rusak menunggu retur hanya {rusak}")
         delta = 0
-    else:  # opname
-        if body.opname_saldo_fisik is None:
-            raise HTTPException(status_code=422, detail="opname butuh opname_saldo_fisik")
-        delta = body.opname_saldo_fisik - sk
-        if delta == 0:
-            raise HTTPException(status_code=409, detail="Saldo fisik sama dengan sistem, tidak ada selisih")
+    else:  # F3 (27 Sep 2026): opname sak kosong hanya lewat POST /ops/opname (owner, saksi & berita acara)
+        raise HTTPException(status_code=422, detail="Opname sak kosong hanya lewat menu Stock Opname (owner)")
     cur.execute("INSERT INTO ops_sak_kosong_mutasi (tanggal, jenis, delta, jumlah, pemasok_id, harga_per_sak, foto_nota, "
                 "keterangan, ref_kas_id, created_by) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
                 (body.tanggal, body.jenis, delta, abs(delta) if body.jenis == "opname" else body.jumlah, body.pemasok_id,
-                 body.harga_per_sak, body.foto_nota, body.keterangan, kas_id, user.id))
+                 _uang(body.harga_per_sak) if body.harga_per_sak is not None else None, body.foto_nota, body.keterangan, kas_id, user.id))
     new_id = cur.fetchone()[0]
     if kas_id:
         cur.execute("UPDATE ops_kas_kecil SET ref_sak_mutasi_id=%s WHERE id=%s", (new_id, kas_id))
@@ -410,10 +424,14 @@ def sak_mutasi(body: SakIn, conn=Depends(get_db),
 def sak_batal(row_id: int, body: BatalIn, conn=Depends(get_db),
               user: security.CurrentUser = Depends(security.require_pabrik_tulis)):
     cur = conn.cursor()
+    _kunci(cur, "kas", "sak")
     cur.execute("SELECT jenis, delta, ref_kas_id, ref_produksi_id FROM ops_sak_kosong_mutasi WHERE id=%s", (row_id,))
     r = cur.fetchone()
     if not r:
         raise HTTPException(status_code=404, detail="Tidak ditemukan")
+    if r[0] in ("opname", "dipakai"):
+        # F3 (27 Sep 2026): opname dibatalkan lewat /ops/opname/{id}/batal (owner); 'dipakai' lewat produksinya
+        raise HTTPException(status_code=409, detail="Mutasi opname/produksi tidak bisa dibatalkan dari menu Sak -- batalkan dari dokumen asalnya")
     if r[3]:
         raise HTTPException(status_code=409, detail="Mutasi ini milik produksi -- batalkan produksinya")
     cur.execute("SELECT saldo FROM v_ops_saldo_sak_kosong")
@@ -469,6 +487,7 @@ def produksi_baru(body: ProduksiIn, conn=Depends(get_db),
     """P4: satu transaksi -- produksi + sak kosong -N + stok jadi +N. QC: 5 sampel, lolos bila
     >=4 dari 5 >= berat_sak_min_kg; parameter belum diisi -> 'belum'."""
     cur = conn.cursor()
+    _kunci(cur, "sak", "stok")
     cur.execute("SELECT status FROM ops_lot WHERE id=%s AND dibatalkan_pada IS NULL FOR UPDATE", (body.lot_id,))
     lot = cur.fetchone()
     if not lot:
@@ -512,6 +531,7 @@ def produksi_batal(row_id: int, body: BatalIn, conn=Depends(get_db),
     """Membatalkan produksi = membatalkan ketiga baris (produksi, sak dipakai, stok jadi). Ditolak
     bila stok jadi sudah terpakai (dikirim) sehingga saldo akan negatif (P5)."""
     cur = conn.cursor()
+    _kunci(cur, "sak", "stok")
     cur.execute("SELECT jumlah_sak, dibatalkan_pada FROM ops_produksi_sak WHERE id=%s FOR UPDATE", (row_id,))
     r = cur.fetchone()
     if not r:
@@ -571,6 +591,7 @@ def list_kas(bulan: Optional[str] = None, conn=Depends(get_db),
 def kas_baru(body: KasIn, conn=Depends(get_db),
              user: security.CurrentUser = Depends(security.require_pabrik_tulis)):
     cur = conn.cursor()
+    _kunci(cur, "kas")
     if body.jenis == "isi_ulang":
         if not user.is_owner:
             raise HTTPException(status_code=403, detail="Isi ulang kas kecil hanya Owner")
@@ -578,11 +599,11 @@ def kas_baru(body: KasIn, conn=Depends(get_db),
     else:
         kategori = body.kategori
         cur.execute("SELECT saldo FROM v_ops_saldo_kas")
-        if _num(cur.fetchone()[0]) - body.nominal < 0:
+        if Decimal(cur.fetchone()[0]) - _uang(body.nominal) < 0:
             raise HTTPException(status_code=409, detail="Saldo kas kecil tidak cukup (P5)")
     cur.execute("INSERT INTO ops_kas_kecil (tanggal, jenis, kategori, nominal, keterangan, foto_nota, created_by) "
                 "VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id",
-                (body.tanggal, body.jenis, kategori, body.nominal, body.keterangan, body.foto_nota, user.id))
+                (body.tanggal, body.jenis, kategori, _uang(body.nominal), body.keterangan, body.foto_nota, user.id))
     new_id = cur.fetchone()[0]
     log_audit(conn, user.id, "ops_kas_" + body.jenis, "ops_kas_kecil", new_id, {"nominal": body.nominal, "kategori": kategori})
     conn.commit()
@@ -593,6 +614,7 @@ def kas_baru(body: KasIn, conn=Depends(get_db),
 def kas_batal(row_id: int, body: BatalIn, conn=Depends(get_db),
               user: security.CurrentUser = Depends(security.require_pabrik_tulis)):
     cur = conn.cursor()
+    _kunci(cur, "kas")
     cur.execute("SELECT jenis, nominal, kategori, ref_sak_mutasi_id FROM ops_kas_kecil WHERE id=%s", (row_id,))
     r = cur.fetchone()
     if not r:
@@ -603,7 +625,7 @@ def kas_batal(row_id: int, body: BatalIn, conn=Depends(get_db),
         if not user.is_owner:
             raise HTTPException(status_code=403, detail="Hanya Owner")
         cur.execute("SELECT saldo FROM v_ops_saldo_kas")
-        if _num(cur.fetchone()[0]) - _num(r[1]) < 0:
+        if Decimal(cur.fetchone()[0]) - Decimal(r[1]) < 0:
             raise HTTPException(status_code=409, detail="Pembatalan isi ulang membuat saldo negatif (P5)")
     _batal(cur, conn, user, "ops_kas_kecil", row_id, body.alasan, "ops_kas_batal")
     conn.commit()
@@ -658,9 +680,10 @@ def upah_baru(body: UpahIn, conn=Depends(get_db),
     tarif = body.tarif if body.tarif is not None else _param(cur, "upah_" + body.peran, body.tanggal)
     if tarif is None:
         raise HTTPException(status_code=422, detail=f"Tarif upah {body.peran} belum diisi owner dan tidak dikirim")
-    total = round(body.jumlah * tarif, 2)
+    _kunci(cur, "kas")
+    total = _uang(Decimal(str(body.jumlah)) * Decimal(str(tarif)))
     cur.execute("SELECT saldo FROM v_ops_saldo_kas")
-    if _num(cur.fetchone()[0]) - total < 0:
+    if Decimal(cur.fetchone()[0]) - total < 0:
         raise HTTPException(status_code=409, detail=f"Saldo kas kecil tidak cukup untuk upah Rp{total:,.0f} (P5)")
     cur.execute("INSERT INTO ops_kas_kecil (tanggal, jenis, kategori, nominal, keterangan, created_by) "
                 "VALUES (%s,'keluar','upah',%s,%s,%s) RETURNING id",
@@ -670,7 +693,7 @@ def upah_baru(body: UpahIn, conn=Depends(get_db),
                 "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
                 (body.tanggal, body.nama.strip(), body.peran, body.satuan, body.jumlah, tarif, total, kas_id, body.catatan, user.id))
     new_id = cur.fetchone()[0]
-    log_audit(conn, user.id, "ops_upah_baru", "ops_upah_harian", new_id, {"total": total, "kas_id": kas_id})
+    log_audit(conn, user.id, "ops_upah_baru", "ops_upah_harian", new_id, {"total": float(total), "kas_id": kas_id})
     conn.commit()
     return _upah_rows(cur, "WHERE id=%s", (new_id,))[0]
 
@@ -679,6 +702,7 @@ def upah_baru(body: UpahIn, conn=Depends(get_db),
 def upah_batal(row_id: int, body: BatalIn, conn=Depends(get_db),
                user: security.CurrentUser = Depends(security.require_pabrik_tulis)):
     cur = conn.cursor()
+    _kunci(cur, "kas")
     cur.execute("SELECT kas_id FROM ops_upah_harian WHERE id=%s", (row_id,))
     r = cur.fetchone()
     if not r:
