@@ -50,7 +50,7 @@ CUST_ADDR   = [
 ]
 # Items: (no_item, deskripsi, qty_m3, rp_per_m3)
 ITEMS = [
-    (1, "Cocopeat", 100, 50000),
+    (1, "Cocopeat", 100, 50000, "PLACEHOLDER"),
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -268,7 +268,7 @@ def generate_pdf(inv_no, inv_date, no_bap, site, no_po, customer, cust_addr, ite
             line(cx, row_y, cx, row_y + row_h, width=0.3)
 
         if i < len(items):
-            item_no, item_desc, qty, harga = items[i]
+            item_no, item_desc, qty, harga = items[i][:4]
             amount     = qty * harga
             sub_total += amount
             text(cols["no"]     + 6*mm,  row_y + 2.5*mm, str(i+1), align="center")
@@ -446,8 +446,11 @@ def main():
         # invoice SPLIT akan salah dibaca -- invoices.po_id cuma menyimpan PO UTAMA sementara
         # total_qty memuat SELURUH kiriman, jadi luberan ke PO kedua tak terlihat dan penjaga
         # menyalak tiap hari untuk data yang sebenarnya benar.
-        # ITEMS dan PO_SPLITS sejajar urutannya (keduanya keluaran alokasi_po).
-        for _urut, ((_no, _desc, _qty, _harga), (_po, _)) in enumerate(zip(ITEMS, PO_SPLITS), start=1):
+        # Tiap entri ITEMS membawa nomor PO-nya sendiri (elemen ke-5 dari alokasi_po).
+        # JANGAN di-zip dengan PO_SPLITS: PO_SPLITS digabung per PO, jadi lebih pendek
+        # dari ITEMS kalau dua BAP jatuh ke PO yang sama -- zip memotong barisnya diam-diam.
+        # PO_SPLITS tetap dipakai, tapi hanya untuk menambah used_qty.
+        for _urut, (_no, _desc, _qty, _harga, _po) in enumerate(ITEMS, start=1):
             if _qty <= 0:
                 continue
             cur.execute(

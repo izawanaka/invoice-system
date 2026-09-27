@@ -124,7 +124,7 @@ def alokasi_po(qty_list, po_list, qty_field, used_field, price_field):
             ambil = round(min(q, tersedia), 4)
             # Kalau nomor PO sudah berawalan "PO" (mis. PO-12-000...), jangan tambah "PO." lagi
             label_po = po_no if str(po_no).upper().startswith("PO") else f"PO.{po_no}"
-            items.append((len(items) + 1, f"Cocopeat - {label_po}", ambil, harga))
+            items.append((len(items) + 1, f"Cocopeat - {label_po}", ambil, harga, po_no))
             if po_no not in splits:
                 urutan.append(po_no)
             splits[po_no] = round(splits.get(po_no, 0) + ambil, 4)
@@ -152,7 +152,7 @@ def patch_and_run(inv_no, inv_date, no_bap, site, no_po, customer, cust_addr, it
                      src, flags=re.MULTILINE|re.DOTALL)
     items_str = "[\n"
     for item in items:
-        items_str += f"    ({item[0]}, \"{item[1]}\", {item[2]}, {item[3]}),\n"
+        items_str += f"    ({item[0]}, \"{item[1]}\", {item[2]}, {item[3]}, \"{item[4]}\"),\n"
     items_str += "]"
     src = re.sub(r'^ITEMS\s*=\s*\[.*?\]', f'ITEMS = {items_str}',
                  src, flags=re.MULTILINE|re.DOTALL)
@@ -372,7 +372,7 @@ def main():
     # TIDAK boleh membuat script keluar dengan kode gagal -- n8n akan melaporkan invoice yang
     # sebenarnya BERHASIL sebagai GAGAL, dan owner akan mengira tidak ada apa-apa yang terjadi.
     try:
-        baris_po = [(po_splits[k][0], items[k][2], items[k][3]) for k in range(len(items))]
+        baris_po = [(items[k][4], items[k][2], items[k][3]) for k in range(len(items))]
         update_excel_log(inv_no, site, no_bap, baris_po, inv_date)
     except Exception as e:
         print("  PERINGATAN: invoice SUDAH terbit, tapi baris Excel gagal ditulis: %s" % e)
