@@ -164,8 +164,8 @@ def daftarkan(filename, data, ocr, sumber, badan_usaha_kode=None,
         cur.execute(
             "INSERT INTO app_bap_nota (badan_usaha_kode, jenis, no_bap, site, tanggal, "
             "qty_kg, qty_m3, confidence, original_filename, original_path, nota_pdf_path, "
-            "ocr_json, uploaded_by, sumber) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s) "
+            "ocr_json, uploaded_by, sumber, nopol) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s) "
             f"RETURNING {KOLOM}",
             (
                 (badan_usaha_kode or "").upper() or None,
@@ -182,6 +182,8 @@ def daftarkan(filename, data, ocr, sumber, badan_usaha_kode=None,
                 json.dumps(ocr, ensure_ascii=False),
                 uploaded_by,
                 sumber,
+                # plat kendaraan dari OCR BAP (28 Sep 2026); kosong -> NULL
+                (str(ocr.get("nopol") or "").strip()[:100] or None),
             ),
         )
         row = cur.fetchone()

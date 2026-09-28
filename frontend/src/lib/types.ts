@@ -167,6 +167,21 @@ export interface InvoiceOut {
   paperless_doc_id: string | null;
   tahap_dok?: string | null; // terbit/ke_konsultan/faktur_ada/terkirim (operasional, bukan pelunasan)
   dibatalkan_at?: string | null; // terisi = invoice sudah dibatalkan (qty PO & BAP sudah dikembalikan)
+  // 28 Sep 2026: rincian per BAP (semua role)
+  items?: InvoiceItemOut[];
+}
+
+// Rincian per BAP di dalam satu invoice (Rekap Invoice). sak/nopol/nota_id null
+// utk BAP lama yang tidak punya unggahan app_bap_nota.
+export interface InvoiceItemOut {
+  urutan?: number | null;
+  no_bap?: string | null;
+  tgl_bap?: string | null;
+  qty?: number | null;
+  satuan?: string | null;
+  sak?: number | null;
+  nopol?: string | null;
+  nota_id?: number | null;
 }
 
 export interface BAPItemIn {
@@ -263,6 +278,8 @@ export interface BAPNotaOut {
   mitra_pt_nama?: string | null;
   deteksi_status?: string | null; // "auto" | "perlu_konfirmasi" | "manual"
   dipakai_invoice?: string | null; // no. invoice kalau BAP ini sudah dipakai, null kalau belum
+  nopol?: string | null; // plat kendaraan dari OCR BAP (28 Sep 2026)
+  sak?: number | null; // jumlah sak dari OCR BAP
 }
 
 export interface PODocOut {

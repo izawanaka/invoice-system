@@ -30,7 +30,7 @@ services:
 
   invoice-web:
     build:
-      context: /home/izawa/invoice-system/frontend
+      context: /home/izawa/invoice-sandbox/frontend
       args:
         # LAN sandbox test: browser owner memanggil API langsung ke IP VM.
         # Nanti utk produksi via Cloudflare, nilai ini diganti & image di-rebuild.

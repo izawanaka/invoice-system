@@ -156,6 +156,67 @@ def _tolak_bap_sudah_dipakai(body: schemas.InvoiceGenerateRequest):
         )
 
 
+def _isi_rincian_bap(cur, invoices):
+    """Rincian per BAP utk Rekap Invoice (28 Sep 2026): no BAP, tgl, qty, sak, plat.
+
+    Sumber: invoice_items (baris BAP yang ditagih) + app_bap_nota (unggahan BAP:
+    sak dari ocr_json->>'jumlah_sak', plat dari kolom nopol). Nota dicocokkan ke
+    item lewat dipakai_invoice = no_invoice, lalu no_bap; BAP TANPA nomor
+    dicocokkan berurutan (nota tanpa nomor yang belum terpakai). BAP lama tanpa
+    nota (sebelum 28 Jul 2026) tetap tampil dari invoice_items, sak/plat None.
+    Bukan informasi pelunasan -> dikirim ke semua role.
+    """
+    if not invoices:
+        return
+    by_id = {inv.id: inv for inv in invoices}
+    cur.execute(
+        "SELECT ii.invoice_id, ii.urutan, ii.no_bap, ii.qty, ii.satuan, i.no_invoice, i.tgl_bap "
+        "FROM invoice_items ii JOIN invoices i ON i.id = ii.invoice_id "
+        "WHERE ii.invoice_id = ANY(%s) ORDER BY ii.invoice_id, ii.urutan, ii.id",
+        (list(by_id),),
+    )
+    items = cur.fetchall()
+    nomor_inv = list({r[5] for r in items})
+    notas = {}
+    if nomor_inv:
+        cur.execute(
+            "SELECT id, dipakai_invoice, no_bap, tanggal, nopol, ocr_json->>'jumlah_sak' "
+            "FROM app_bap_nota WHERE dipakai_invoice = ANY(%s) ORDER BY id",
+            (nomor_inv,),
+        )
+        for n in cur.fetchall():
+            notas.setdefault(n[1], []).append(
+                {"id": n[0], "no_bap": (n[2] or "").strip(), "tanggal": n[3],
+                 "nopol": n[4], "sak": n[5], "terpakai": False})
+    for inv_id, urutan, no_bap, qty, satuan, no_inv, tgl_bap in items:
+        nb = (no_bap or "").strip()
+        kandidat = notas.get(no_inv, [])
+        cocok = None
+        if nb:
+            cocok = next((n for n in kandidat if not n["terpakai"] and n["no_bap"] == nb), None)
+        else:
+            cocok = next((n for n in kandidat if not n["terpakai"] and not n["no_bap"]), None)
+        if cocok is not None:
+            cocok["terpakai"] = True
+        sak = None
+        if cocok is not None and cocok["sak"] not in (None, ""):
+            try:
+                sak = int(float(cocok["sak"])) or None
+            except ValueError:
+                sak = None
+        by_id[inv_id].items.append(schemas.InvoiceItemOut(
+            urutan=urutan,
+            no_bap=nb or None,
+            tgl_bap=(cocok["tanggal"] if cocok is not None and cocok["tanggal"]
+                     else (tgl_bap.isoformat() if tgl_bap else None)),
+            qty=float(qty) if qty is not None else None,
+            satuan=satuan,
+            sak=sak,
+            nopol=(cocok["nopol"] if cocok is not None else None),
+            nota_id=(cocok["id"] if cocok is not None else None),
+        ))
+
+
 @router.get("", response_model=List[schemas.InvoiceOut])
 def list_invoices(
     badan_usaha_kode: Optional[str] = Query(default=None),
@@ -223,6 +284,7 @@ def list_invoices(
             no_faktur_pajak=no_faktur_pajak, paperless_doc_id=paperless_doc_id,
             tahap_dok=tahap_dok, dibatalkan_at=dibatalkan_at,
         ))
+    _isi_rincian_bap(cur, out)
     return out
 
 

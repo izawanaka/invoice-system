@@ -229,9 +229,26 @@ class BAPNotaOut(BaseModel):
     mitra_pt_nama: Optional[str] = None
     deteksi_status: Optional[str] = None
     dipakai_invoice: Optional[str] = None
+    # 28 Sep 2026: plat kendaraan (kolom nopol, dari OCR BAP) & jumlah sak (ocr_json)
+    nopol: Optional[str] = None
+    sak: Optional[int] = None
 
 
 # ---------- Invoice ----------
+class InvoiceItemOut(BaseModel):
+    """Rincian per BAP di dalam satu invoice (Rekap Invoice, 28 Sep 2026).
+    Sumber: invoice_items + app_bap_nota (sak dari ocr_json, plat dari nopol).
+    BAP lama tanpa nota: sak/nopol/nota_id None."""
+    urutan: Optional[int] = None
+    no_bap: Optional[str] = None
+    tgl_bap: Optional[str] = None
+    qty: Optional[float] = None
+    satuan: Optional[str] = None
+    sak: Optional[int] = None
+    nopol: Optional[str] = None
+    nota_id: Optional[int] = None
+
+
 class InvoiceOut(BaseModel):
     id: int
     badan_usaha_kode: str
@@ -263,6 +280,8 @@ class InvoiceOut(BaseModel):
     # invoice batal (Vault baru) -- NULL = aktif, terisi = dibatalkan (qty PO &
     # BAP terkait sudah dikembalikan otomatis, lihat routers/invoices.py batalkan_invoice)
     dibatalkan_at: Optional[datetime] = None
+    # rincian per BAP (semua role -- bukan informasi pelunasan)
+    items: List[InvoiceItemOut] = Field(default_factory=list)
 
 
 class InvoicePaymentUpdateRequest(BaseModel):

@@ -3,7 +3,7 @@
 import * as React from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { Upload, CheckCircle2, MoreHorizontal, Printer, Truck, Download, FileText, Ban } from "lucide-react";
+import { Upload, CheckCircle2, MoreHorizontal, Printer, Truck, Download, FileText, Ban, ChevronDown, ChevronRight, ClipboardList } from "lucide-react";
 
 import { RequireAuth } from "@/components/require-auth";
 import { AppShell } from "@/components/app-shell";
@@ -22,8 +22,9 @@ import {
   cekDokumenInvoice,
   downloadDokumen,
   batalkanInvoice,
+  listBAPNota,
 } from "@/lib/api";
-import type { InvoiceOut, DokumenItem, PembayaranItem, PembayaranRingkas } from "@/lib/types";
+import type { InvoiceOut, InvoiceItemOut, BAPNotaOut, DokumenItem, PembayaranItem, PembayaranRingkas } from "@/lib/types";
 import { formatDate, formatIDR } from "@/lib/utils";
 
 import { Button } from "@/components/ui/button";
@@ -419,6 +420,43 @@ function ResiDialog({
   );
 }
 
+// Rincian per BAP di bawah baris invoice (28 Sep 2026): no BAP, tanggal, qty,
+// sak, plat. Semua role boleh lihat (bukan informasi pelunasan). BAP lama tanpa
+// unggahan nota tampil "-" utk sak/plat, bukan angka tebakan.
+function RincianBap({ items }: { items: InvoiceItemOut[] | undefined }) {
+  if (!items || items.length === 0) {
+    return <p className="text-xs text-muted-foreground px-2 py-1">Tidak ada rincian BAP tersimpan untuk invoice ini.</p>;
+  }
+  return (
+    <table className="w-full text-xs">
+      <thead>
+        <tr className="text-muted-foreground">
+          <th className="px-2 py-1 text-left font-medium">#</th>
+          <th className="px-2 py-1 text-left font-medium">No. BAP</th>
+          <th className="px-2 py-1 text-left font-medium">Tgl BAP</th>
+          <th className="px-2 py-1 text-right font-medium">Qty</th>
+          <th className="px-2 py-1 text-right font-medium">Sak</th>
+          <th className="px-2 py-1 text-left font-medium">Plat Kendaraan</th>
+        </tr>
+      </thead>
+      <tbody>
+        {items.map((it, idx) => (
+          <tr key={idx} className="border-t">
+            <td className="px-2 py-1">{it.urutan ?? idx + 1}</td>
+            <td className="px-2 py-1 font-medium">{it.no_bap ?? "(tanpa nomor)"}</td>
+            <td className="px-2 py-1">{it.tgl_bap ?? "-"}</td>
+            <td className="px-2 py-1 text-right">
+              {it.qty != null ? `${new Intl.NumberFormat("id-ID", { maximumFractionDigits: 3 }).format(it.qty)} ${it.satuan ?? ""}` : "-"}
+            </td>
+            <td className="px-2 py-1 text-right">{it.sak != null ? new Intl.NumberFormat("id-ID").format(it.sak) : "-"}</td>
+            <td className="px-2 py-1">{it.nopol && it.nopol.trim() ? it.nopol : "-"}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
 function InvoicesContent() {
   const { selected } = useBadanUsaha();
   const { user } = useAuth();
@@ -434,7 +472,12 @@ function InvoicesContent() {
   const [invoiceList, setInvoiceList] = React.useState<InvoiceOut[]>([]);
   const [loading, setLoading] = React.useState(true);
   const buFilter = selected;
-  const [activeTab, setActiveTab] = React.useState<"outstanding" | "lunas">("outstanding");
+  const [activeTab, setActiveTab] = React.useState<"outstanding" | "lunas" | "semua">("outstanding");
+  // Baris invoice yang dibuka rinciannya (kunci = no_invoice). Semua role.
+  const [terbuka, setTerbuka] = React.useState<Record<string, boolean>>({});
+  // BAP yang sudah diunggah tapi BELUM ditagih (app_bap_nota.dipakai_invoice IS NULL).
+  const [belumTagih, setBelumTagih] = React.useState<BAPNotaOut[]>([]);
+  const [belumTagihBuka, setBelumTagihBuka] = React.useState(false);
   const [paymentTarget, setPaymentTarget] = React.useState<InvoiceOut | null>(null);
   const [fakturTarget, setFakturTarget] = React.useState<InvoiceOut | null>(null);
   const [resiTarget, setResiTarget] = React.useState<InvoiceOut | null>(null);
@@ -469,10 +512,23 @@ function InvoicesContent() {
     load();
   }, [load]);
 
+  // Daftar BAP belum ditagih -- endpoint yang sama dengan kartu di halaman /bap.
+  // Gagal memuat tidak mengganggu rekap (kartu hanya tidak tampil).
+  const loadBelumTagih = React.useCallback(() => {
+    listBAPNota({ badan_usaha_kode: buFilter, include_downloaded: true, belum_invoice: true })
+      .then((rows) => setBelumTagih(rows.filter((n) => (n.jenis ?? "BAP") !== "PO")))
+      .catch(() => setBelumTagih([]));
+  }, [buFilter]);
+
+  React.useEffect(() => {
+    loadBelumTagih();
+  }, [loadBelumTagih]);
+
   // Ganti workspace -> kosongkan centang & filter site (daftar site ikut berganti).
   React.useEffect(() => {
     setDipilih({});
     setSiteFilter("ALL");
+    setTerbuka({});
   }, [buFilter]);
 
   // Outstanding = belum lunas (mencakup "generated" & "sebagian"/cicilan).
@@ -490,6 +546,7 @@ function InvoicesContent() {
   }, [invoiceList]);
   const displayList = React.useMemo(() => {
     if (!bolehLihatPelunasan) return bySite;
+    if (activeTab === "semua") return bySite;
     return activeTab === "outstanding"
       ? bySite.filter((inv) => inv.status !== "paid")
       : bySite.filter((inv) => inv.status === "paid");
@@ -565,6 +622,10 @@ function InvoicesContent() {
     load();
   }
 
+  function toggleRincian(noInvoice: string) {
+    setTerbuka((prev) => ({ ...prev, [noInvoice]: !prev[noInvoice] }));
+  }
+
   async function handleUnduhResi(inv: InvoiceOut) {
     try {
       const blob = await downloadResi(inv.no_invoice);
@@ -610,6 +671,60 @@ function InvoicesContent() {
         </div>
       </div>
 
+      {belumTagih.length > 0 ? (
+        <Card className="border-warning/50">
+          <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-3 py-3">
+            <button
+              type="button"
+              className="flex items-center gap-2 text-left"
+              onClick={() => setBelumTagihBuka((v) => !v)}
+              aria-expanded={belumTagihBuka}
+            >
+              {belumTagihBuka ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+              <ClipboardList className="h-4 w-4 text-warning" />
+              <CardTitle className="text-base">BAP belum ditagih: {belumTagih.length}</CardTitle>
+            </button>
+            {!isViewer ? (
+              <Button size="sm" variant="outline" onClick={() => router.push("/bap")}>
+                Terbitkan Invoice
+              </Button>
+            ) : null}
+          </CardHeader>
+          {belumTagihBuka ? (
+            <CardContent className="pt-0">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>No. BAP</TableHead>
+                    <TableHead>Tgl BAP</TableHead>
+                    <TableHead>Site</TableHead>
+                    <TableHead className="text-right">Qty</TableHead>
+                    <TableHead className="text-right">Sak</TableHead>
+                    <TableHead>Plat Kendaraan</TableHead>
+                    <TableHead>Diunggah</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {belumTagih.map((n) => (
+                    <TableRow key={n.id}>
+                      <TableCell className="font-medium">{n.no_bap ?? "(tanpa nomor)"}</TableCell>
+                      <TableCell>{n.tanggal ?? "-"}</TableCell>
+                      <TableCell>{n.site ?? "-"}</TableCell>
+                      <TableCell className="text-right">
+                        {n.qty_m3 ? `${new Intl.NumberFormat("id-ID", { maximumFractionDigits: 3 }).format(n.qty_m3)} m3` : n.qty_kg ? `${new Intl.NumberFormat("id-ID").format(n.qty_kg)} kg` : "-"}
+                      </TableCell>
+                      <TableCell className="text-right">{n.sak != null ? new Intl.NumberFormat("id-ID").format(n.sak) : "-"}</TableCell>
+                      <TableCell>{n.nopol && n.nopol.trim() ? n.nopol : "-"}</TableCell>
+                      <TableCell>{formatDate(n.created_at ?? null)}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </CardContent>
+          ) : null}
+        </Card>
+      ) : null}
+
       <Card>
         <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-3">
@@ -632,10 +747,11 @@ function InvoicesContent() {
             </Select>
           </div>
           {bolehLihatPelunasan ? (
-            <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "outstanding" | "lunas")}>
+            <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "outstanding" | "lunas" | "semua")}>
               <TabsList>
                 <TabsTrigger value="outstanding">Outstanding ({outstandingCount})</TabsTrigger>
                 <TabsTrigger value="lunas">Lunas ({lunasCount})</TabsTrigger>
+                <TabsTrigger value="semua">Semua ({bySite.length})</TabsTrigger>
               </TabsList>
             </Tabs>
           ) : null}
@@ -655,6 +771,7 @@ function InvoicesContent() {
                     />
                   </TableHead>
                 ) : null}
+                <TableHead className="w-8" aria-label="Rincian BAP" />
                 <TableHead>No. Invoice</TableHead>
                 <TableHead>Tanggal</TableHead>
                 <TableHead>Site</TableHead>
@@ -669,23 +786,26 @@ function InvoicesContent() {
             <TableBody>
               {loading ? (
                 <TableRow>
-                  <TableCell colSpan={bolehLihatPelunasan ? 10 : 7} className="text-center text-muted-foreground">
+                  <TableCell colSpan={bolehLihatPelunasan ? 11 : 8} className="text-center text-muted-foreground">
                     Memuat...
                   </TableCell>
                 </TableRow>
               ) : displayList.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={bolehLihatPelunasan ? 10 : 7} className="text-center text-muted-foreground">
+                  <TableCell colSpan={bolehLihatPelunasan ? 11 : 8} className="text-center text-muted-foreground">
                     {bolehLihatPelunasan
                       ? activeTab === "outstanding"
                         ? "Tidak ada invoice outstanding (semua sudah lunas)."
-                        : "Belum ada invoice yang lunas."
+                        : activeTab === "lunas"
+                          ? "Belum ada invoice yang lunas."
+                          : "Tidak ada data invoice."
                       : "Tidak ada data invoice."}
                   </TableCell>
                 </TableRow>
               ) : (
                 displayList.map((inv) => (
-                  <TableRow key={inv.id} data-state={dipilih[inv.no_invoice] ? "selected" : undefined}>
+                  <React.Fragment key={inv.id}>
+                  <TableRow data-state={dipilih[inv.no_invoice] ? "selected" : undefined}>
                     {bolehLihatPelunasan ? (
                       <TableCell>
                         <input
@@ -699,7 +819,25 @@ function InvoicesContent() {
                         />
                       </TableCell>
                     ) : null}
-                    <TableCell>{inv.no_invoice}</TableCell>
+                    <TableCell>
+                      <button
+                        type="button"
+                        aria-label={`Rincian BAP ${inv.no_invoice}`}
+                        aria-expanded={!!terbuka[inv.no_invoice]}
+                        className="rounded p-0.5 hover:bg-muted"
+                        onClick={() => toggleRincian(inv.no_invoice)}
+                      >
+                        {terbuka[inv.no_invoice] ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+                      </button>
+                    </TableCell>
+                    <TableCell>
+                      <button type="button" className="text-left hover:underline" onClick={() => toggleRincian(inv.no_invoice)}>
+                        {inv.no_invoice}
+                      </button>
+                      {inv.items && inv.items.length > 0 ? (
+                        <span className="ml-1 text-[10px] text-muted-foreground">({inv.items.length} BAP)</span>
+                      ) : null}
+                    </TableCell>
                     <TableCell>{formatDate(inv.tgl_invoice)}</TableCell>
                     <TableCell>{inv.site ?? "-"}</TableCell>
                     <TableCell>{formatIDR(inv.grand_total)}</TableCell>
@@ -776,6 +914,14 @@ function InvoicesContent() {
                       </DropdownMenu>
                     </TableCell>
                   </TableRow>
+                  {terbuka[inv.no_invoice] ? (
+                    <TableRow className="bg-muted/30 hover:bg-muted/30">
+                      <TableCell colSpan={bolehLihatPelunasan ? 11 : 8} className="p-2">
+                        <RincianBap items={inv.items} />
+                      </TableCell>
+                    </TableRow>
+                  ) : null}
+                  </React.Fragment>
                 ))
               )}
             </TableBody>

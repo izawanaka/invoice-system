@@ -19,13 +19,22 @@ _NOTA_SELECT = (
     "SELECT n.id, n.badan_usaha_kode, n.jenis, n.no_bap, n.site, n.tanggal, "
     "n.qty_kg, n.qty_m3, n.confidence, n.original_filename, n.downloaded_at, "
     "n.created_at, n.sumber, n.mitra_pt_id, pt.nama, n.deteksi_status, "
-    "n.dipakai_invoice "
+    "n.dipakai_invoice, n.nopol, n.ocr_json->>'jumlah_sak' "
     "FROM app_bap_nota n LEFT JOIN app_mitra_pt pt ON pt.id = n.mitra_pt_id"
 )
 
 
 class BAPMitraIn(BaseModel):
     pt_id: int
+
+
+def _int_atau_none(v):
+    """jumlah_sak di ocr_json bisa "180", 180, 180.0, "" atau None."""
+    try:
+        n = int(float(v))
+    except (TypeError, ValueError):
+        return None
+    return n if n > 0 else None
 
 
 def _nota_row(r) -> schemas.BAPNotaOut:
@@ -37,6 +46,7 @@ def _nota_row(r) -> schemas.BAPNotaOut:
         confidence=r[8], original_filename=r[9], downloaded_at=r[10], created_at=r[11],
         sumber=r[12], mitra_pt_id=r[13], mitra_pt_nama=r[14], deteksi_status=r[15],
         dipakai_invoice=r[16],
+        nopol=r[17], sak=_int_atau_none(r[18]),
     )
 
 
