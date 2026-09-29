@@ -46,7 +46,8 @@ def make_test_script(dest, inv_no, inv_date, no_bap, site, no_po, customer, po_s
     src = replace_var(src, 'OUTPUT_DIR', f'"{output_dir}"')
     splits_str = "[" + ", ".join(f'("{p}", {q})' for p, q in po_splits) + "]"
     src = replace_var(src, 'PO_SPLITS', splits_str)
-    items_str = "[\n" + "\n".join(f'    ({i[0]}, "{i[1]}", {i[2]}, {i[3]}),' for i in items) + "\n]"
+    # Tulis SEMUA elemen tiap item (4, 5 atau 6: no, desc, qty, harga[, po_no[, no_bap]]).
+    items_str = "[\n" + "\n".join('    (' + ', '.join(repr(x) for x in i) + '),' for i in items) + "\n]"
     src = re.sub(r'^ITEMS\s*=\s*\[.*?\]', f'ITEMS = {items_str}', src, flags=re.MULTILINE | re.DOTALL)
     # PO_FILE dialihkan ke file tracker dummy supaya tidak menimpa po_tracker.json asli
     src = replace_var(src, 'PO_FILE', f'"{TEST_DIR}/po_tracker_test.json"')
@@ -232,6 +233,30 @@ def scenario_f_kks_rollback():
     cur.close(); conn.close()
 
 
+def scenario_g_multi_bap_per_baris():
+    print("\n[Skenario G] 2 BAP dalam 1 invoice -> nomor BAP per baris & ledger per BAP")
+    out_dir = f"{TEST_DIR}/output_g"
+    script = f"{TEST_DIR}/run_g.py"
+    make_test_script(script, "907/IX/TestSite/2026", "29 September 2026", "TESTBAP-G1",
+                     "TestSite", "TEST-PO-DKP-2", "Test Customer",
+                     [("TEST-PO-DKP-2", 300)],
+                     [(1, "Cocopeat - PO.TEST-PO-DKP-2", 100, 1000, "TEST-PO-DKP-2", "TESTBAP-G1"),
+                      (2, "Cocopeat - PO.TEST-PO-DKP-2", 200, 1000, "TEST-PO-DKP-2", "TESTBAP-G2")],
+                     out_dir)
+    r = run_script(script)
+    check("G: script exit 0", r.returncode == 0, (r.stdout + r.stderr)[-300:])
+    conn = db_helper.get_conn(); cur = conn.cursor()
+    cur.execute("SELECT ii.no_bap FROM invoice_items ii JOIN invoices i ON i.id = ii.invoice_id "
+                "WHERE i.no_invoice = %s ORDER BY ii.urutan", ("907/IX/TestSite/2026",))
+    nomor = [r_[0] for r_ in cur.fetchall()]
+    check("G: invoice_items membawa nomor BAP per baris", nomor == ["TESTBAP-G1", "TESTBAP-G2"], str(nomor))
+    cur.execute("SELECT no_bap, total_qty FROM bap WHERE no_bap IN ('TESTBAP-G1','TESTBAP-G2') ORDER BY no_bap")
+    led = [(a, float(b)) for a, b in cur.fetchall()]
+    check("G: ledger bap 1 baris per BAP dgn qty masing-masing",
+          led == [("TESTBAP-G1", 100.0), ("TESTBAP-G2", 200.0)], str(led))
+    cur.close(); conn.close()
+
+
 def main():
     print("=" * 60)
     print("TEST SUITE: invoice_dkp.py transaksi atomik")
@@ -244,6 +269,7 @@ def main():
         scenario_d_po_tidak_ada()
         scenario_e_kks_non_pkp()
         scenario_f_kks_rollback()
+        scenario_g_multi_bap_per_baris()
     finally:
         cleanup()
 

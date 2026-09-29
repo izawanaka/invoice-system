@@ -77,7 +77,7 @@ def get_po(site):
     return lst[0], (lst[1] if len(lst) > 1 else None)
 
 
-def alokasi_po(qty_list, po_list, qty_field, used_field, price_field):
+def alokasi_po(qty_list, po_list, qty_field, used_field, price_field, bap_list=None):
     """Alokasikan QTY (satu BAP atau banyak BAP) ke PO aktif secara berurutan.
 
     Aturan bisnis (ditetapkan owner, 14 Juli 2026):
@@ -108,7 +108,10 @@ def alokasi_po(qty_list, po_list, qty_field, used_field, price_field):
 
     items, splits, urutan = [], {}, []
     idx = 0
-    for q in qty_list:
+    # bap_list sejajar qty_list: nomor BAP tiap kiriman (29 Sep 2026). Dibawa ke
+    # elemen ke-6 ITEMS supaya invoice_items & ledger bap tercatat per BAP.
+    for _i, q in enumerate(qty_list):
+        _nb = str(bap_list[_i]) if bap_list and _i < len(bap_list) and bap_list[_i] else ""
         q = float(q)
         while q > 1e-9:
             if idx >= len(sisa):
@@ -120,7 +123,7 @@ def alokasi_po(qty_list, po_list, qty_field, used_field, price_field):
             ambil = round(min(q, tersedia), 4)
             # Kalau nomor PO sudah berawalan "PO" (mis. PO-12-000...), jangan tambah "PO." lagi
             label_po = po_no if str(po_no).upper().startswith("PO") else f"PO.{po_no}"
-            items.append((len(items) + 1, f"Cocopeat - {label_po}", ambil, harga, po_no))
+            items.append((len(items) + 1, f"Cocopeat - {label_po}", ambil, harga, po_no, _nb))
             if po_no not in splits:
                 urutan.append(po_no)
             splits[po_no] = round(splits.get(po_no, 0) + ambil, 4)
@@ -153,7 +156,7 @@ def patch_and_run(inv_no, inv_date, no_bap, site, no_po, customer, cust_addr, it
     src = re.sub(r'CUST_ADDR\s*=\s*\[.*?\]', f'CUST_ADDR = {cust_addr_str}', src, flags=re.MULTILINE|re.DOTALL)
     items_str = "[\n"
     for item in items:
-        items_str += f"    ({item[0]}, \"{item[1]}\", {item[2]}, {item[3]}, \"{item[4]}\"),\n"
+        items_str += f"    ({item[0]}, \"{item[1]}\", {item[2]}, {item[3]}, \"{item[4]}\", {json.dumps(item[5] if len(item) > 5 else str())}),\n"
     items_str += "]"
     src = re.sub(r'^ITEMS\s*=\s*\[.*?\]', f'ITEMS = {items_str}',
                  src, flags=re.MULTILINE|re.DOTALL)
@@ -360,9 +363,11 @@ def main():
 
     po_list = get_po_list(site)
     qty_list = [float(b["qty_m3"]) for b in bap_items] if bap_items else [qty_m3]
+    # Nomor BAP per kiriman (29 Sep 2026); kosong -> pakai nomor BAP header.
+    bap_list = [(b.get("no_bap") or no_bap) for b in bap_items] if bap_items else [no_bap]
     try:
         items, po_splits, order_ref = alokasi_po(
-            qty_list, po_list, "total_m3", "used_m3", "rp_m3")
+            qty_list, po_list, "total_m3", "used_m3", "rp_m3", bap_list=bap_list)
     except ValueError as e:
         print(json.dumps({"status":"error","message":str(e)}))
         sys.exit(1)

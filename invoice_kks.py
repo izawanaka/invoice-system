@@ -406,11 +406,19 @@ def main():
                     "UPDATE purchase_orders SET used_qty = used_qty + %s WHERE po_no=%s AND badan_usaha_id=5",
                     (qty_x, po_no_x)
                 )
-        cur.execute(
-            "INSERT INTO bap (badan_usaha_id, no_bap, site, tgl_bap, total_qty, satuan, status) "
-            "VALUES (5, %s, %s, %s, %s, 'm3', 'invoiced') ON CONFLICT DO NOTHING",
-            (NO_BAP, SITE, _parse_tgl(INV_DATE), total_qty)
-        )
+        # 29 Sep 2026: SATU baris ledger per nomor BAP. Dulu 1 baris gabungan atas
+        # NO_BAP (= BAP pertama) -> BAP ke-2 dst tidak tercatat, lolos dari penjaga
+        # dobel-tagih, dan tidak ikut paket cetak (kasus Inv 106/IX/Jembayan/2026).
+        _bap_qty = {}
+        for _it in ITEMS:
+            _nb = _it[5] if len(_it) > 5 and _it[5] else NO_BAP
+            _bap_qty[_nb] = _bap_qty.get(_nb, 0) + _it[2]
+        for _nb, _q in _bap_qty.items():
+            cur.execute(
+                "INSERT INTO bap (badan_usaha_id, no_bap, site, tgl_bap, total_qty, satuan, status) "
+                "VALUES (5, %s, %s, %s, %s, 'm3', 'invoiced') ON CONFLICT DO NOTHING",
+                (_nb, SITE, _parse_tgl(INV_DATE), _q)
+            )
         try:
             inv_seq = int(INV_NO.split("/")[0])
         except Exception:
@@ -450,7 +458,12 @@ def main():
         # JANGAN di-zip dengan PO_SPLITS: PO_SPLITS digabung per PO, jadi lebih pendek
         # dari ITEMS kalau dua BAP jatuh ke PO yang sama -- zip memotong barisnya diam-diam.
         # PO_SPLITS tetap dipakai, tapi hanya untuk menambah used_qty.
-        for _urut, (_no, _desc, _qty, _harga, _po) in enumerate(ITEMS, start=1):
+        # Elemen ITEMS: (no, deskripsi, qty, harga, po_no, no_bap). po_no & no_bap
+        # opsional supaya salinan lama (4 elemen) tetap jalan; no_bap kosong -> NO_BAP.
+        for _urut, _it in enumerate(ITEMS, start=1):
+            _no, _desc, _qty, _harga = _it[:4]
+            _po = _it[4] if len(_it) > 4 else (PO_SPLITS[0][0] if PO_SPLITS else NO_PO)
+            _nb = _it[5] if len(_it) > 5 and _it[5] else NO_BAP
             if _qty <= 0:
                 continue
             cur.execute(
@@ -458,7 +471,7 @@ def main():
                 "satuan, harga_sat, subtotal, po_id) VALUES (%s, %s, %s, %s, %s, 'm3', %s, %s, "
                 "(SELECT id FROM purchase_orders WHERE po_no=%s AND badan_usaha_id=5)) "
                 "ON CONFLICT (invoice_id, urutan) DO NOTHING",
-                (invoice_id, _urut, NO_BAP, _desc, _qty, _harga, _qty * _harga, _po)
+                (invoice_id, _urut, _nb, _desc, _qty, _harga, _qty * _harga, _po)
             )
 
         conn.commit()
