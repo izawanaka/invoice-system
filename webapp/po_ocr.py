@@ -77,21 +77,8 @@ def baca_po_detail(bagian):
     dgn prompt KHUSUS ekstraksi PO rinci. SENGAJA TIDAK memakai ocr_doc.baca_dokumen()
     krn fungsi itu memakai PROMPT klasifikasi ringkas milik bot Telegram yang tidak
     boleh diubah/dipakai dgn prompt lain (lihat docstring modul)."""
-    with open(ANTHROPIC_KEY_FILE) as f:
-        key = f.read().strip()
-    body = json.dumps({
-        "model": MODEL,
-        "max_tokens": 1500,
-        "messages": [{"role": "user",
-                      "content": bagian + [{"type": "text", "text": PROMPT_PO_DETAIL}]}],
-    }).encode()
-    req = urllib.request.Request("https://api.anthropic.com/v1/messages", data=body)
-    req.add_header("x-api-key", key)
-    req.add_header("anthropic-version", "2023-06-01")
-    req.add_header("content-type", "application/json")
-    resp = json.loads(urllib.request.urlopen(req).read())
-    teks = resp["content"][0]["text"].replace("```json", "").replace("```", "").strip()
-    return json.loads(teks)
+    # 30 Sep 2026: OCR mesin lokal + ocr_parser (Aturan #21); PROMPT_PO_DETAIL tinggal dokumentasi bentuk JSON
+    return ocr_doc.baca_po_detail(bagian)
 
 
 def ekstrak_po(filename, data):

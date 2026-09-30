@@ -38,7 +38,12 @@ import pt_site         # pemetaan nama PT -> site (fix tebakan site salah)
 TG_TOKEN           = ocr_bap.TG_TOKEN
 ANTHROPIC_KEY_FILE = ocr_bap.ANTHROPIC_KEY_FILE
 BAP_STATE_FILE     = config.d("multi_bap_state.json")
-MODEL              = "claude-opus-4-6"
+# OCR = mesin LOKAL ocr-paddle (Aturan Bisnis #21, 30 Sep 2026) -- tanpa API luar, tanpa biaya.
+# Alamat mesin dari env INVOICE_OCR_URL: bot di host memakai bawaan 127.0.0.1:8011 (produksi;
+# port 8000 host sudah dipakai layanan lain) atau env.sh sandbox (127.0.0.1:8001); container API
+# diberi nama service lewat compose (http://ocr-paddle:8000).
+OCR_URL            = os.environ.get("INVOICE_OCR_URL", "http://127.0.0.1:8011")
+MODEL              = "ocr-paddle/v6_small"
 
 SITES = ["Suring", "Jembayan", "Sebakis", "Sesayap", "Senyiur", "MPS"]
 
@@ -159,9 +164,9 @@ def bagian_dari_berkas(nama, data):
     else:
         with open("/tmp/doc.pdf", "wb") as f:
             f.write(data)
-        subprocess.run(["pdftoppm", "-r", "120", "-png", "-l", "2",
+        subprocess.run(["pdftoppm", "-r", "200", "-png", "-l", "3",   # 30 Sep 2026: 3 halaman, 200 dpi
                         "/tmp/doc.pdf", "/tmp/doc_p"], check=True, capture_output=True)
-        for hal in ("1", "2"):
+        for hal in ("1", "2", "3"):
             p = f"/tmp/doc_p-{hal}.png"
             if os.path.exists(p):
                 bagian.append({"type": "image", "source": {"type": "base64",
@@ -246,7 +251,49 @@ def terapkan_pt_site(ocr):
     return status
 
 
+def panggil_mesin_ocr(gambar_bytes):
+    """Kirim SATU gambar (jpg/png) ke ocr-paddle -> daftar baris {teks, skor, kotak}.
+    Mesin mati/tak terjangkau -> RuntimeError dengan sebab jelas (tercatat juga di stderr),
+    BUKAN '(tidak terbaca)' diam-diam."""
+    import urllib.error
+    req = urllib.request.Request(OCR_URL.rstrip("/") + "/ocr", data=gambar_bytes, method="POST")
+    req.add_header("content-type", "application/octet-stream")
+    try:
+        resp = json.loads(urllib.request.urlopen(req, timeout=180).read())
+    except urllib.error.URLError as e:
+        print(f"[OCR] mesin ocr-paddle tidak terjangkau di {OCR_URL}: {e}", file=sys.stderr)
+        raise RuntimeError(f"Mesin OCR (ocr-paddle) tidak berjalan atau tidak terjangkau di {OCR_URL}: {e}")
+    if resp.get("error"):
+        raise RuntimeError(f"Mesin OCR menolak gambar: {resp['error']}")
+    return resp["baris"]
+
+
+def panggil_ocr(bagian, prompt=None, max_tokens=None):
+    """Nama lama dipertahankan (dipakai po_ocr/faktur_ocr). Semua halaman -> mesin OCR ->
+    ocr_parser (aturan per template) -> dict bentuk lama, atau daftar dict bila >1 BAP."""
+    import ocr_parser
+    halaman = [panggil_mesin_ocr(base64.b64decode(b["source"]["data"])) for b in bagian]
+    return ocr_parser.baca_dokumen(halaman)
+
+
 def baca_dokumen(bagian):
+    return panggil_ocr(bagian)
+
+
+def baca_po_detail(bagian):
+    """Untuk po_ocr.ekstrak_po(): bentuk JSON PROMPT_PO_DETAIL. Bukan PO -> semua null."""
+    d = panggil_ocr(bagian)
+    if isinstance(d, list):
+        d = d[0]
+    if d.get("jenis") != "PO":
+        return {"po_no": None, "customer": None, "tanggal_iso": None, "site_tebakan": None,
+                "items": [], "total_qty": None, "satuan": None, "harga_satuan": None,
+                "total_nilai": None, "catatan_keraguan": "Dokumen ini sepertinya bukan PO"}
+    return d
+
+
+def _baca_anthropic_lama(bagian):
+    """ROLLBACK: fungsi lama (API Anthropic berbayar) -- tidak dipanggil."""
     with open(ANTHROPIC_KEY_FILE) as f:
         key = f.read().strip()
     body = json.dumps({

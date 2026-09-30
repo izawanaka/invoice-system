@@ -18,6 +18,7 @@ services:
       WEBAPP_CORS_ORIGINS: "https://cocopeat.delianterra.com"
       INVOICE_OUT: /app/pdf_local/DKP
       INVOICE_OUT_KKS: /app/pdf_local/KKS
+      INVOICE_OCR_URL: http://ocr-paddle:8000
     env_file:
       - /home/izawa/invoice-system/.env
     volumes:

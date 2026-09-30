@@ -70,7 +70,9 @@ def _ocr_berkas(filename: str, data: bytes) -> dict:
             pass
         return ocr
     except Exception as e:
-        return {"jenis": "LAIN", "confidence": "low", "error": str(e)[:200]}
+        import sys
+        print(f"[OCR] gagal membaca {filename}: {e}", file=sys.stderr)   # 30 Sep 2026: jangan diam-diam
+        return {"jenis": "LAIN", "confidence": "low", "error": str(e)[:200], "catatan": str(e)[:200]}
 
 
 @router.get("", response_model=List[schemas.BAPOut])
