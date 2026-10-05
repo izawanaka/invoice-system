@@ -26,8 +26,14 @@ services:
       # Kredensial KHUSUS container: DB_HOST=bisnis-db (nama container di network
       # homelab) -- menimpa file host yang isinya localhost.
       - /home/izawa/invoice-system/.bisnis_db_credentials.docker:/app/.bisnis_db_credentials:ro
-      # Share PC (PDF invoice) -- sama seperti proses lama (mount CIFS host).
-      - /mnt/media/D:/mnt/media/D
+      # Share NAS Admin (NFS di host /mnt/nas/Admin, 5 Okt 2026) dipasang di jalur lama
+      # SynologyDrive -> PO Tracker (config._PC) tersimpan ke NAS tanpa ubah kode.
+      # rslave: kalau NAS di-mount ulang di host, container ikut melihatnya.
+      - type: bind
+        source: /mnt/nas/Admin
+        target: /mnt/media/D/SynologyDrive
+        bind:
+          propagation: rslave
     networks:
       - homelab
 
