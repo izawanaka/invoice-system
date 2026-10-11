@@ -1,6 +1,7 @@
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from starlette.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -127,7 +128,13 @@ async def upload_bap_nota(
         raise HTTPException(status_code=413, detail="File terlalu besar (maks 15 MB)")
 
     nama = file.filename or "unggahan.bin"
-    ocr = _ocr_berkas(nama, data)
+    # 11 Okt 2026: _ocr_berkas = I/O blocking (urlopen ke ocr-paddle, 3 halaman
+    # x ~30 detik) di dalam endpoint async -> event loop berhenti dan SEMUA
+    # permintaan lain (login /auth/me, daftar BAP) ikut membeku sampai OCR
+    # selesai. Dilempar ke threadpool supaya API tetap melayani.
+    # uvicorn SENGAJA tetap 1 worker: _generate_lock (anti-dobel invoice)
+    # hanya sahih dengan satu worker.
+    ocr = await run_in_threadpool(_ocr_berkas, nama, data)
 
     # 19 Agu 2026 (revisi): ocr_doc.bagian_dari_berkas() merender PDF halaman 1 DAN 2
     # (pdftoppm -l 2) lalu mengirim KEDUA gambar dalam satu permintaan, sementara PROMPT
