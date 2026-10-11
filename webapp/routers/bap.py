@@ -1,6 +1,11 @@
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import (APIRouter, BackgroundTasks, Depends, File, Form, HTTPException,
+                     Query, UploadFile)
+import hashlib
+import json
+import sys
+import db_helper
 from starlette.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -112,6 +117,7 @@ def list_bap(
 
 @router.post("/nota", response_model=schemas.BAPNotaOut, status_code=201)
 async def upload_bap_nota(
+    background: BackgroundTasks,
     file: UploadFile = File(...),
     badan_usaha_kode: Optional[str] = Form(default=None),
     conn=Depends(get_db),
@@ -128,113 +134,242 @@ async def upload_bap_nota(
         raise HTTPException(status_code=413, detail="File terlalu besar (maks 15 MB)")
 
     nama = file.filename or "unggahan.bin"
-    # 11 Okt 2026: _ocr_berkas = I/O blocking (urlopen ke ocr-paddle, 3 halaman
-    # x ~30 detik) di dalam endpoint async -> event loop berhenti dan SEMUA
-    # permintaan lain (login /auth/me, daftar BAP) ikut membeku sampai OCR
-    # selesai. Dilempar ke threadpool supaya API tetap melayani.
-    # uvicorn SENGAJA tetap 1 worker: _generate_lock (anti-dobel invoice)
-    # hanya sahih dengan satu worker.
-    ocr = await run_in_threadpool(_ocr_berkas, nama, data)
 
-    # 19 Agu 2026 (revisi): ocr_doc.bagian_dari_berkas() merender PDF halaman 1 DAN 2
-    # (pdftoppm -l 2) lalu mengirim KEDUA gambar dalam satu permintaan, sementara PROMPT
-    # meminta SATU objek JSON. Kontraknya ambigu -> model kadang membalas array.
-    # Dua kemungkinan yang HARUS dibedakan, bukan ditolak semua:
-    #   (a) satu BAP yang panjangnya >1 halaman  -> gabungkan jadi satu dict
-    #   (b) beberapa BAP BERBEDA dalam satu berkas -> tolak, jangan pernah menebak
-    #       (mengambil elemen pertama = BAP kedua hilang diam-diam & PO terpotong kurang)
-    if isinstance(ocr, list):
-        entri = [e for e in ocr if isinstance(e, dict)]
-        nomor = []
-        for e in entri:
-            n = (e.get("no_bap") or "").strip()
-            if n and n not in nomor:
-                nomor.append(n)
+    # L3 (11 Okt 2026) -- ANTI-KEMBAR. Jaringan putus / Cloudflare memotong
+    # respons membuat owner menekan Unggah dua kali untuk berkas yang SAMA
+    # PERSIS; dulu itu melahirkan dua baris app_bap_nota (insiden id 44 & 45)
+    # dan berisiko memotong PO dua kali. Berkas identik (sha256 sama) yang
+    # arsipnya BELUM dipakai invoice tidak membuat catatan baru -- arsip lama
+    # yang dikembalikan. Foto berbeda = sha berbeda = tetap catatan terpisah,
+    # jadi keputusan 30 Jul 2026 ("1 unggahan = 1 catatan") tetap berlaku utk
+    # berkas yang memang berbeda.
+    sha = hashlib.sha256(data).hexdigest()
+    cur_sha = conn.cursor()
+    cur_sha.execute(
+        "SELECT id FROM app_bap_nota "
+        "WHERE berkas_sha256 = %s AND dipakai_invoice IS NULL "
+        "ORDER BY id DESC LIMIT 1",
+        (sha,),
+    )
+    kembar = cur_sha.fetchone()
+    if kembar is not None:
+        lama = _fetch_nota(conn, kembar[0])
+        if lama is not None:
+            return lama
 
-        if len(nomor) > 1:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Berkas ini berisi {len(nomor)} BAP dengan nomor berbeda "
-                    f"({', '.join(nomor)}). Sistem menerima satu BAP per berkas. "
-                    f"Pecah jadi {len(nomor)} file, unggah satu per satu, lalu centang "
-                    "semuanya saat menerbitkan invoice -- hasilnya tetap satu invoice."
-                ),
-            )
+    # L2 (11 Okt 2026) -- UNGGAH DUA FASE. OCR satu BAP = 3 halaman x ~30 detik
+    # (~90-110 detik), sementara Cloudflare memutus koneksi origin di sekitar
+    # 100 detik: respons tidak pernah sampai, layar tampak gagal padahal baris
+    # sudah masuk DB. Maka: simpan baris 'antre' + balas SEKETIKA, OCR jalan di
+    # latar, klien menanyakan status lewat GET /bap/nota/{id}/status.
+    row = bap_arsip.daftarkan(nama, data, {}, sumber="web",
+                              badan_usaha_kode=badan_usaha_kode,
+                              uploaded_by=user.id, conn=conn,
+                              sha256=sha, status_ocr="antre")
+    log_audit(conn, user.id, "upload_bap_nota", "app_bap_nota", row[0],
+              {"file": nama, "sumber": "web", "status_ocr": "antre"})
+    conn.commit()
+    background.add_task(_proses_ocr_latar, row[0], nama, data, badan_usaha_kode)
+    return _fetch_nota(conn, row[0])
 
-        # <=1 nomor unik -> halaman lanjutan dari BAP yang sama. Gabungkan.
-        PENTING = ("no_bap", "tanggal", "qty_kg", "qty_m3", "site")
 
-        def _kosong(v):
-            """Halaman kosong/lanjutan sering dibaca model sebagai 0 atau "" --
-            itu BUKAN informasi, jadi tidak boleh dihitung sebagai nilai yang
-            bentrok. qty_kg=0 pada BAP KKS (satuan m3) juga berarti 'tidak berlaku'.
-            """
-            if v is None:
-                return True
-            if isinstance(v, bool):
-                return False
-            if isinstance(v, str):
-                return v.strip() in ("", "0", "-")
-            if isinstance(v, (int, float)):
-                return v == 0
-            if isinstance(v, (list, dict)):
-                return len(v) == 0
-            return False
+def _simpan_status_ocr(nota_id, status, pesan=None):
+    """Tulis status OCR latar. Koneksi sendiri -- jalan setelah respons dikirim."""
+    conn = db_helper.get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE app_bap_nota SET status_ocr = %s, ocr_error = %s WHERE id = %s",
+            (status, (str(pesan)[:2000] if pesan else None), nota_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
-        gabung = {}
-        for e in entri:
-            for k, v in e.items():
-                if _kosong(v):
-                    continue
-                if k not in gabung:
-                    gabung[k] = v
-                elif gabung[k] != v and k in PENTING:
+
+def _proses_ocr_latar(nota_id, nama, data, badan_usaha_kode):
+    """OCR dijalankan SETELAH respons unggah terkirim (BackgroundTasks).
+
+    Fungsi ini sinkron, jadi FastAPI menjalankannya di threadpool -- event loop
+    tetap bebas melayani login & daftar BAP. Validasi di bawah adalah blok yang
+    SAMA PERSIS dengan versi sinkron lama (dipindah oleh patcher, bukan ditulis
+    ulang); bedanya HTTPException tidak lagi jadi balasan HTTP melainkan
+    dicatat sebagai status_ocr='gagal' + ocr_error, karena respons sudah pergi.
+    """
+    conn = db_helper.get_conn()
+    try:
+        try:
+            ocr = _ocr_berkas(nama, data)
+            # 19 Agu 2026 (revisi): ocr_doc.bagian_dari_berkas() merender PDF halaman 1 DAN 2
+            # (pdftoppm -l 2) lalu mengirim KEDUA gambar dalam satu permintaan, sementara PROMPT
+            # meminta SATU objek JSON. Kontraknya ambigu -> model kadang membalas array.
+            # Dua kemungkinan yang HARUS dibedakan, bukan ditolak semua:
+            #   (a) satu BAP yang panjangnya >1 halaman  -> gabungkan jadi satu dict
+            #   (b) beberapa BAP BERBEDA dalam satu berkas -> tolak, jangan pernah menebak
+            #       (mengambil elemen pertama = BAP kedua hilang diam-diam & PO terpotong kurang)
+            if isinstance(ocr, list):
+                entri = [e for e in ocr if isinstance(e, dict)]
+                nomor = []
+                for e in entri:
+                    n = (e.get("no_bap") or "").strip()
+                    if n and n not in nomor:
+                        nomor.append(n)
+
+                if len(nomor) > 1:
                     raise HTTPException(
                         status_code=400,
                         detail=(
-                            f"Halaman-halaman berkas ini memberi nilai berbeda untuk "
-                            f"'{k}' ({gabung[k]} vs {v}), jadi sistem tidak bisa memastikan "
-                            "mana yang benar. Unggah halaman BAP-nya saja sebagai satu "
-                            "berkas, atau periksa apakah berkas ini memuat lebih dari satu BAP."
+                            f"Berkas ini berisi {len(nomor)} BAP dengan nomor berbeda "
+                            f"({', '.join(nomor)}). Sistem menerima satu BAP per berkas. "
+                            f"Pecah jadi {len(nomor)} file, unggah satu per satu, lalu centang "
+                            "semuanya saat menerbitkan invoice -- hasilnya tetap satu invoice."
                         ),
                     )
-        ocr = gabung or {"jenis": "LAIN", "confidence": "low"}
 
-    elif not isinstance(ocr, dict):
-        ocr = {"jenis": "LAIN", "confidence": "low"}
+                # <=1 nomor unik -> halaman lanjutan dari BAP yang sama. Gabungkan.
+                PENTING = ("no_bap", "tanggal", "qty_kg", "qty_m3", "site")
 
-    # Fase 1: tolak BAP dgn nomor yang sama persis kalau sudah pernah tercatat
-    # (server-side -- pengecekan client-side di wizard bisa dilewati dgn
-    # panggilan API langsung/UI lain). Dicek server SEBELUM diarsipkan supaya
-    # tidak ada baris app_bap_nota duplikat yang keburu tersimpan.
-    no_bap_baca = (ocr.get("no_bap") or "").strip()
-    if no_bap_baca:
-        cur_dup = conn.cursor()
-        cur_dup.execute(
-            "SELECT id, original_filename, created_at FROM app_bap_nota "
-            "WHERE no_bap = %s ORDER BY id DESC LIMIT 1",
-            (no_bap_baca,),
+                def _kosong(v):
+                    """Halaman kosong/lanjutan sering dibaca model sebagai 0 atau "" --
+                    itu BUKAN informasi, jadi tidak boleh dihitung sebagai nilai yang
+                    bentrok. qty_kg=0 pada BAP KKS (satuan m3) juga berarti 'tidak berlaku'.
+                    """
+                    if v is None:
+                        return True
+                    if isinstance(v, bool):
+                        return False
+                    if isinstance(v, str):
+                        return v.strip() in ("", "0", "-")
+                    if isinstance(v, (int, float)):
+                        return v == 0
+                    if isinstance(v, (list, dict)):
+                        return len(v) == 0
+                    return False
+
+                gabung = {}
+                for e in entri:
+                    for k, v in e.items():
+                        if _kosong(v):
+                            continue
+                        if k not in gabung:
+                            gabung[k] = v
+                        elif gabung[k] != v and k in PENTING:
+                            raise HTTPException(
+                                status_code=400,
+                                detail=(
+                                    f"Halaman-halaman berkas ini memberi nilai berbeda untuk "
+                                    f"'{k}' ({gabung[k]} vs {v}), jadi sistem tidak bisa memastikan "
+                                    "mana yang benar. Unggah halaman BAP-nya saja sebagai satu "
+                                    "berkas, atau periksa apakah berkas ini memuat lebih dari satu BAP."
+                                ),
+                            )
+                ocr = gabung or {"jenis": "LAIN", "confidence": "low"}
+
+            elif not isinstance(ocr, dict):
+                ocr = {"jenis": "LAIN", "confidence": "low"}
+
+            # Fase 1: tolak BAP dgn nomor yang sama persis kalau sudah pernah tercatat
+            # (server-side -- pengecekan client-side di wizard bisa dilewati dgn
+            # panggilan API langsung/UI lain). Dicek server SEBELUM diarsipkan supaya
+            # tidak ada baris app_bap_nota duplikat yang keburu tersimpan.
+            no_bap_baca = (ocr.get("no_bap") or "").strip()
+            if no_bap_baca:
+                cur_dup = conn.cursor()
+                cur_dup.execute(
+                    "SELECT id, original_filename, created_at FROM app_bap_nota "
+                    "WHERE no_bap = %s ORDER BY id DESC LIMIT 1",
+                    (no_bap_baca,),
+                )
+                dup = cur_dup.fetchone()
+                if dup is not None:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"BAP nomor {no_bap_baca} sudah pernah diunggah sebelumnya "
+                            f"(arsip id={dup[0]}, berkas '{dup[1]}', pada {dup[2]}). "
+                            f"Kalau ini memang pengganti, hapus dulu arsip lama di menu BAP, "
+                            f"atau periksa apakah nomor BAP terbaca keliru."
+                        ),
+                    )
+        except HTTPException as e:
+            conn.rollback()
+            _simpan_status_ocr(nota_id, "gagal", e.detail)
+            return
+        except Exception as e:  # mesin OCR mati, berkas rusak, dll.
+            conn.rollback()
+            _simpan_status_ocr(nota_id, "gagal", f"OCR gagal: {e}")
+            return
+
+        cur = conn.cursor()
+        cur.execute("SELECT original_path FROM app_bap_nota WHERE id = %s", (nota_id,))
+        baris = cur.fetchone()
+        rel_asli = baris[0] if baris else None
+
+        rel_nota = rel_asli
+        try:
+            if rel_asli:
+                rel_nota = bap_arsip._nota_pdf(rel_asli, nama, ocr)
+        except Exception as e:
+            print(f"  [bap] nota cetak gagal dibuat (nota {nota_id}): {e}", file=sys.stderr)
+
+        cur.execute(
+            "UPDATE app_bap_nota SET jenis=%s, no_bap=%s, site=%s, tanggal=%s, "
+            "qty_kg=%s, qty_m3=%s, confidence=%s, nota_pdf_path=%s, ocr_json=%s::jsonb, "
+            "nopol=%s, status_ocr='selesai', ocr_error=NULL WHERE id=%s",
+            (
+                ocr.get("jenis"),
+                ocr.get("no_bap") or None,
+                ocr.get("site") or None,
+                ocr.get("tanggal") or None,
+                float(ocr.get("qty_kg") or 0) or None,
+                float(ocr.get("qty_m3") or 0) or None,
+                ocr.get("confidence"),
+                rel_nota,
+                json.dumps(ocr, ensure_ascii=False),
+                (str(ocr.get("nopol") or "").strip()[:100] or None),
+                nota_id,
+            ),
         )
-        dup = cur_dup.fetchone()
-        if dup is not None:
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    f"BAP nomor {no_bap_baca} sudah pernah diunggah sebelumnya "
-                    f"(arsip id={dup[0]}, berkas '{dup[1]}', pada {dup[2]}). "
-                    f"Kalau ini memang pengganti, hapus dulu arsip lama di menu BAP, "
-                    f"atau periksa apakah nomor BAP terbaca keliru."
-                ),
+        try:
+            pt_id, deteksi = bap_arsip._deteksi_mitra_pt(cur, ocr.get("site"), badan_usaha_kode)
+            cur.execute(
+                "UPDATE app_bap_nota SET mitra_pt_id=%s, deteksi_status=%s WHERE id=%s",
+                (pt_id, deteksi, nota_id),
             )
+        except Exception as e:
+            print(f"  [bap] deteksi mitra gagal (nota {nota_id}): {e}", file=sys.stderr)
+        conn.commit()
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        _simpan_status_ocr(nota_id, "gagal", f"gagal menyimpan hasil OCR: {e}")
+    finally:
+        conn.close()
 
-    row = bap_arsip.daftarkan(nama, data, ocr, sumber="web",
-                              badan_usaha_kode=badan_usaha_kode,
-                              uploaded_by=user.id, conn=conn)
-    log_audit(conn, user.id, "upload_bap_nota", "app_bap_nota", row[0],
-              {"no_bap": ocr.get("no_bap"), "file": nama, "sumber": "web"})
-    conn.commit()
-    return _fetch_nota(conn, row[0])
+
+@router.get("/nota/{nota_id}/status", response_model=schemas.BAPNotaStatusOut)
+def status_bap_nota(
+    nota_id: int,
+    conn=Depends(get_db),
+    user: security.CurrentUser = Depends(security.get_current_user),
+):
+    """Dipakai klien untuk menunggu OCR latar (L2). 'antre' -> tanya lagi 2 detik
+    lagi; 'selesai' -> field 'nota' sudah berisi hasil lengkap; 'gagal' -> tampilkan
+    ocr_error apa adanya ke owner."""
+    cur = conn.cursor()
+    cur.execute("SELECT status_ocr, ocr_error FROM app_bap_nota WHERE id = %s", (nota_id,))
+    r = cur.fetchone()
+    if not r:
+        raise HTTPException(status_code=404, detail="Nota BAP tidak ditemukan")
+    status, pesan = r
+    return schemas.BAPNotaStatusOut(
+        id=nota_id,
+        status_ocr=status,
+        ocr_error=pesan,
+        nota=_fetch_nota(conn, nota_id) if status == "selesai" else None,
+    )
 
 
 @router.get("/nota", response_model=List[schemas.BAPNotaOut])

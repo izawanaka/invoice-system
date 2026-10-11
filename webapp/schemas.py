@@ -234,6 +234,14 @@ class BAPNotaOut(BaseModel):
     sak: Optional[int] = None
 
 
+class BAPNotaStatusOut(BaseModel):
+    """Status OCR latar sebuah unggahan BAP (L2, 11 Okt 2026)."""
+    id: int
+    status_ocr: str               # "antre" | "selesai" | "gagal"
+    ocr_error: Optional[str] = None
+    nota: Optional[BAPNotaOut] = None
+
+
 # ---------- Invoice ----------
 class InvoiceItemOut(BaseModel):
     """Rincian per BAP di dalam satu invoice (Rekap Invoice, 28 Sep 2026).

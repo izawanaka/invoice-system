@@ -2,6 +2,7 @@ import type {
   KontrakOut,
   BadanUsahaOut,
   BAPNotaOut,
+  BAPNotaStatusOut,
   BAPOut,
   FakturPajakOcrOut,
   FakturPajakOut,
@@ -270,11 +271,38 @@ export function listBAP(params: ListBAPParams = {}) {
   return request<BAPOut[]>(`/bap${suffix}`);
 }
 
-export function uploadBAPNota(file: File, badanUsahaKode?: string) {
+export function statusBAPNota(notaId: number) {
+  return request<BAPNotaStatusOut>(`/bap/nota/${notaId}/status`);
+}
+
+// L2 (11 Okt 2026): server membalas seketika dengan status "antre" lalu
+// meng-OCR di latar (3 halaman x ~30 detik). Dulu respons ditahan sampai OCR
+// selesai dan Cloudflare memutusnya di sekitar 100 detik -- layar tampak gagal
+// padahal BAP sudah masuk, lalu owner mengunggah ulang dan lahir BAP kembar.
+// Di sini kita yang menunggu, dengan menanyakan status tiap 2 detik.
+const OCR_JEDA_MS = 2000;
+const OCR_BATAS_MS = 5 * 60 * 1000;
+
+export async function uploadBAPNota(file: File, badanUsahaKode?: string): Promise<BAPNotaOut> {
   const form = new FormData();
   form.append("file", file);
   if (badanUsahaKode) form.append("badan_usaha_kode", badanUsahaKode);
-  return request<BAPNotaOut>("/bap/nota", { method: "POST", body: form });
+  const awal = await request<BAPNotaOut>("/bap/nota", { method: "POST", body: form });
+
+  const tenggat = Date.now() + OCR_BATAS_MS;
+  while (Date.now() < tenggat) {
+    const st = await statusBAPNota(awal.id);
+    if (st.status_ocr === "selesai") return st.nota ?? awal;
+    if (st.status_ocr === "gagal") {
+      throw new ApiError(422, st.ocr_error || "BAP gagal dibaca mesin OCR.");
+    }
+    await new Promise((r) => setTimeout(r, OCR_JEDA_MS));
+  }
+  throw new ApiError(
+    504,
+    "BAP sudah tersimpan tapi pembacaannya belum selesai setelah 5 menit. " +
+      "Jangan unggah ulang -- buka kartu 'BAP Belum Diterbitkan Invoice' untuk melihat hasilnya.",
+  );
 }
 
 export function listBAPNota(params: { include_downloaded?: boolean; badan_usaha_kode?: string; belum_invoice?: boolean } = {}) {

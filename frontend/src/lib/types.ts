@@ -282,6 +282,14 @@ export interface BAPNotaOut {
   sak?: number | null; // jumlah sak dari OCR BAP
 }
 
+// L2 (11 Okt 2026): unggah BAP membalas seketika, OCR jalan di latar.
+export interface BAPNotaStatusOut {
+  id: number;
+  status_ocr: "antre" | "selesai" | "gagal";
+  ocr_error?: string | null;
+  nota?: BAPNotaOut | null;
+}
+
 export interface PODocOut {
   id: number;
   po_no: string;

@@ -119,6 +119,10 @@ def _nota_pdf(rel_asli, filename, ocr):
     return rel
 
 
+class _LewatiDeteksi(Exception):
+    """Penanda internal: baris masih antre OCR, deteksi mitra ditunda."""
+
+
 KOLOM = ("id, badan_usaha_kode, jenis, no_bap, site, tanggal, qty_kg, qty_m3, "
          "confidence, original_filename, downloaded_at, created_at, sumber")
 
@@ -142,7 +146,7 @@ def _deteksi_mitra_pt(cur, site, badan_usaha_kode=None):
 
 
 def daftarkan(filename, data, ocr, sumber, badan_usaha_kode=None,
-              uploaded_by=None, conn=None):
+              uploaded_by=None, conn=None, sha256=None, status_ocr="selesai"):
     """Arsipkan berkas BAP + buat nota cetak + catat di app_bap_nota.
 
     sumber : "web" atau "telegram" -- supaya ketahuan BAP masuk lewat pintu mana.
@@ -164,8 +168,8 @@ def daftarkan(filename, data, ocr, sumber, badan_usaha_kode=None,
         cur.execute(
             "INSERT INTO app_bap_nota (badan_usaha_kode, jenis, no_bap, site, tanggal, "
             "qty_kg, qty_m3, confidence, original_filename, original_path, nota_pdf_path, "
-            "ocr_json, uploaded_by, sumber, nopol) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s) "
+            "ocr_json, uploaded_by, sumber, nopol, berkas_sha256, status_ocr) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s,%s,%s,%s) "
             f"RETURNING {KOLOM}",
             (
                 (badan_usaha_kode or "").upper() or None,
@@ -184,15 +188,22 @@ def daftarkan(filename, data, ocr, sumber, badan_usaha_kode=None,
                 sumber,
                 # plat kendaraan dari OCR BAP (28 Sep 2026); kosong -> NULL
                 (str(ocr.get("nopol") or "").strip()[:100] or None),
+                # 11 Okt 2026: sidik berkas (L3 anti-kembar) & status OCR latar (L2)
+                sha256,
+                status_ocr,
             ),
         )
         row = cur.fetchone()
         try:
+            if status_ocr != "selesai":
+                raise _LewatiDeteksi()
             _pt_id, _deteksi = _deteksi_mitra_pt(cur, ocr.get("site"), badan_usaha_kode)
             cur.execute(
                 "UPDATE app_bap_nota SET mitra_pt_id = %s, deteksi_status = %s WHERE id = %s",
                 (_pt_id, _deteksi, row[0]),
             )
+        except _LewatiDeteksi:
+            pass  # baris 'antre': deteksi mitra dikerjakan fungsi latar setelah OCR
         except Exception as _e:
             import sys as _sys
             print(f"  [bap_arsip] deteksi mitra gagal: {_e}", file=_sys.stderr)
