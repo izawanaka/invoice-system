@@ -206,33 +206,48 @@ def kumpulkan_bagian(conn, no_invoice: str) -> dict:
             bagian["faktur_pajak"]["hilang"].append(
                 "Faktur pajak BELUM diunggah -- unggah lewat menu invoice (aksi Unggah Faktur Pajak)")
 
-    # --- 4. BAP: nota cetak hasil unggahan, dicocokkan per nomor BAP di invoice ---
+    # --- 4. BAP: berkas unggahan yang ditandai dipakai oleh invoice ini ---
+    # Identitas BAP = BARIS UNGGAHAN app_bap_nota, bukan nomor BAP (dok 12,
+    # 30 Jul 2026). BAP boleh TANPA nomor -- BAP KKS memang tidak pernah
+    # bernomor, dan itu tidak boleh menghalanginya ikut tercetak. Aturan yang
+    # sama sudah dipakai Rekap Invoice (routers/invoices.py) dan Daftar Berkas
+    # (routers/dokumen.py); jangan dibuat berbeda di sini lagi.
+    import bap_arsip
+
     cur.execute(
-        "SELECT DISTINCT no_bap FROM invoice_items WHERE invoice_id = %s AND no_bap IS NOT NULL "
-        "ORDER BY 1",
-        (inv_id,),
+        "SELECT id, no_bap, tanggal, nota_pdf_path, original_path "
+        "FROM app_bap_nota WHERE dipakai_invoice = %s "
+        "ORDER BY nullif(trim(no_bap), ''), id",   # bernomor dulu (urut nomor), tanpa nomor di belakang (urut unggahan)
+        (no_inv,),
     )
-    bap_nos = [r[0] for r in cur.fetchall()]
-    for nb in bap_nos:
-        cur.execute(
-            "SELECT nota_pdf_path, original_path FROM app_bap_nota WHERE no_bap = %s "
-            "ORDER BY created_at DESC, id DESC LIMIT 1",
-            (nb,),
-        )
-        r = cur.fetchone()
-        jalur = None
-        if r:
-            import bap_arsip
-            for kandidat in (bap_arsip.jalur(r[0]), bap_arsip.jalur(r[1])):
-                if kandidat and os.path.exists(kandidat):
-                    jalur = kandidat
-                    break
-        if jalur:
-            bagian["bap"]["berkas"].append({"label": f"BAP {nb}", "path": jalur})
+    notas = cur.fetchall()
+    bap_list = []
+    for nid, nb, tgl, nota_pdf_path, original_path in notas:
+        nb = (nb or "").strip()
+        if nb:
+            label = "BAP %s" % nb
+            bap_list.append(nb)
         else:
-            bagian["bap"]["hilang"].append(f"BAP {nb}: belum ada unggahan di sistem")
-    if not bap_nos:
-        bagian["bap"]["hilang"].append("Invoice ini tidak punya rincian nomor BAP di database")
+            ket = tgl or ("unggahan #%d" % nid)
+            label = "BAP tanpa nomor (%s)" % ket
+            bap_list.append("(tanpa nomor, %s)" % ket)
+
+        jalur = None
+        for kandidat in (bap_arsip.jalur(nota_pdf_path), bap_arsip.jalur(original_path)):
+            if kandidat and os.path.exists(kandidat):
+                jalur = kandidat
+                break
+
+        if jalur:
+            bagian["bap"]["berkas"].append({"label": label, "path": jalur})
+        else:
+            bagian["bap"]["hilang"].append(
+                "%s: berkas unggahannya tidak ada di server" % label)
+
+    if not notas:
+        bagian["bap"]["hilang"].append(
+            "Invoice ini tidak punya unggahan BAP di sistem -- unggah BAP-nya "
+            "lewat menu BAP, lalu buka paket cetak lagi")
 
     return {
         "ok": True,
@@ -245,7 +260,7 @@ def kumpulkan_bagian(conn, no_invoice: str) -> dict:
             "no_faktur_pajak": no_faktur,
         },
         "po_list": [{"po_no": r[1]} for r in po_rows],
-        "bap_list": bap_nos,
+        "bap_list": bap_list,
         "bagian": bagian,
     }
 
